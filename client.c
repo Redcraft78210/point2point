@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <errno.h>
 
 #define PORT 2222
 #define BLOCK_SIZE 4096
@@ -35,14 +36,21 @@ void receive_error_message(int server_socket)
     }
     else if (ret == 0)
     {
-        return;
+        return;  // Timeout, pas de données reçues
     }
 
     // Si select retourne un résultat positif, il y a des données à lire
     // Recevoir la longueur du message
     if (recv(server_socket, &message_length, sizeof(message_length), 0) <= 0)
     {
-        perror("Failed to receive message length");
+        if (errno == ECONNRESET)
+        {
+            perror("Connection reset by peer");
+        }
+        else
+        {
+            perror("Failed to receive message length");
+        }
         return;
     }
 
@@ -57,7 +65,14 @@ void receive_error_message(int server_socket)
     // Recevoir le message d'erreur
     if (recv(server_socket, error_message, message_length, 0) <= 0)
     {
-        perror("Failed to receive error message");
+        if (errno == ECONNRESET)
+        {
+            perror("Connection reset by peer");
+        }
+        else
+        {
+            perror("Failed to receive error message");
+        }
         free(error_message);
         return;
     }
@@ -137,8 +152,15 @@ void send_file(int server_socket, const char *filename)
         size_t compressed_size = sizeof(compressed_block) - stream.avail_out;
 
         // Envoyer la taille du bloc compressé
-        if (send(server_socket, &compressed_size, sizeof(compressed_size), 0) == -1 ||
-            send(server_socket, compressed_block, compressed_size, 0) == -1)
+        ssize_t sent = send(server_socket, &compressed_size, sizeof(compressed_size), 0);
+        if (sent == -1 || sent != sizeof(compressed_size))
+        {
+            perror("Failed to send compressed block size");
+            break;
+        }
+
+        sent = send(server_socket, compressed_block, compressed_size, 0);
+        if (sent == -1 || sent != compressed_size)
         {
             perror("Failed to send compressed block");
             break;
