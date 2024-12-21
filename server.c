@@ -11,46 +11,56 @@
 #define DEFAULT_DIR "uploads"
 
 // Function to ensure the destination directory exists
-void ensure_directory_exists(const char *dir) {
+void ensure_directory_exists(const char *dir)
+{
     struct stat st;
-    if (stat(dir, &st) == -1) {
-        if (mkdir(dir, 0755) < 0) {
+    if (stat(dir, &st) == -1)
+    {
+        if (mkdir(dir, 0755) < 0)
+        {
             perror("Failed to create directory");
             exit(EXIT_FAILURE);
         }
-    } else if (!S_ISDIR(st.st_mode)) {
+    }
+    else if (!S_ISDIR(st.st_mode))
+    {
         fprintf(stderr, "Error: %s exists but is not a directory.\n", dir);
         exit(EXIT_FAILURE);
     }
 }
 
 // Function to check if the file exists on the server
-int file_exists(const char *file_path) {
+int file_exists(const char *file_path)
+{
     struct stat st;
     return stat(file_path, &st) == 0;
 }
 
 // Function to send error message to the client
-void send_error(int client_socket, const char *message) {
+void send_error(int client_socket, const char *message)
+{
     size_t message_length = strlen(message) + 1; // Include null terminator
     send(client_socket, &message_length, sizeof(message_length), 0);
     send(client_socket, message, message_length, 0);
 }
 
 // Function to receive and decompress the file
-void receive_file(int client_socket, const char *dest_dir) {
+void receive_file(int client_socket, const char *dest_dir)
+{
     char filename[256];
     size_t filename_length;
 
     // Receive filename length
-    if (recv(client_socket, &filename_length, sizeof(filename_length), 0) <= 0) {
+    if (recv(client_socket, &filename_length, sizeof(filename_length), 0) <= 0)
+    {
         perror("Failed to receive filename length");
         close(client_socket);
         return;
     }
 
     // Receive filename
-    if (recv(client_socket, filename, filename_length, 0) <= 0) {
+    if (recv(client_socket, filename, filename_length, 0) <= 0)
+    {
         perror("Failed to receive filename");
         close(client_socket);
         return;
@@ -62,7 +72,8 @@ void receive_file(int client_socket, const char *dest_dir) {
     snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
 
     // Check if file already exists
-    if (file_exists(full_path)) {
+    if (file_exists(full_path))
+    {
         // Send error message to the client if the file exists
         send_error(client_socket, "File already exists.");
         close(client_socket);
@@ -70,7 +81,8 @@ void receive_file(int client_socket, const char *dest_dir) {
     }
 
     FILE *file = fopen(full_path, "wb");
-    if (!file) {
+    if (!file)
+    {
         perror("Failed to open file for writing");
         close(client_socket);
         return;
@@ -83,16 +95,20 @@ void receive_file(int client_socket, const char *dest_dir) {
     char decompressed_block[BLOCK_SIZE];
     size_t total_bytes_received = 0;
 
-    while (1) {
+    while (1)
+    {
         // Receive block size
-        if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0) break;
+        if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0)
+            break;
 
         // End of file signal (block size of 0)
-        if (block_size == 0) break;
+        if (block_size == 0)
+            break;
 
         // Receive compressed block
         ssize_t bytes_received = recv(client_socket, compressed_block, block_size, 0);
-        if (bytes_received != block_size) {
+        if (bytes_received != block_size)
+        {
             perror("Failed to receive complete block");
             break;
         }
@@ -105,10 +121,13 @@ void receive_file(int client_socket, const char *dest_dir) {
         stream.next_out = (unsigned char *)decompressed_block;
         stream.avail_out = BLOCK_SIZE;
 
-        if (inflate(&stream, Z_FINISH) == Z_STREAM_END) {
+        if (inflate(&stream, Z_FINISH) == Z_STREAM_END)
+        {
             fwrite(decompressed_block, 1, stream.total_out, file);
             total_bytes_received += stream.total_out;
-        } else {
+        }
+        else
+        {
             perror("Decompression error");
             inflateEnd(&stream);
             break;
@@ -121,10 +140,12 @@ void receive_file(int client_socket, const char *dest_dir) {
     printf("File received successfully: %s (%zu bytes)\n", full_path, total_bytes_received);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     const char *dest_dir = DEFAULT_DIR;
 
-    if (argc == 2) {
+    if (argc == 2)
+    {
         dest_dir = argv[1];
     }
 
@@ -135,7 +156,8 @@ int main(int argc, char *argv[]) {
     socklen_t addr_len = sizeof(client_addr);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
+    if (server_fd < 0)
+    {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
@@ -145,13 +167,15 @@ int main(int argc, char *argv[]) {
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
         perror("Bind failed");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, 1) < 0) {
+    if (listen(server_fd, 1) < 0)
+    {
         perror("Listen failed");
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -161,7 +185,8 @@ int main(int argc, char *argv[]) {
     printf("Files will be saved to: %s\n", dest_dir);
 
     client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-    if (client_socket < 0) {
+    if (client_socket < 0)
+    {
         perror("Accept failed");
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -171,6 +196,8 @@ int main(int argc, char *argv[]) {
 
     receive_file(client_socket, dest_dir);
 
-    close(server_fd); // Ensure that server socket is closed properly
+    // Fermer proprement la connexion avant de fermer le socket
+    shutdown(client_socket, SHUT_RDWR); // SHUT_RDWR indique que la connexion est terminée pour lecture et écriture
+    close(client_socket);               // Puis fermer le socket proprement
     return 0;
 }
