@@ -109,7 +109,10 @@ void receive_file(int client_socket, const char *dest_dir)
     {
         // Receive block size
         if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0)
+        {
+            perror("Failed to receive block size");
             break;
+        }
 
         // End of file signal (block size of 0)
         if (block_size == 0)
@@ -132,7 +135,7 @@ void receive_file(int client_socket, const char *dest_dir)
         int ret = inflate(&stream, Z_NO_FLUSH);
         if (ret != Z_OK && ret != Z_STREAM_END)
         {
-            perror("Decompression error");
+            fprintf(stderr, "Decompression error: %d\n", ret);
             break;
         }
 

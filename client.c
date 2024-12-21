@@ -9,26 +9,53 @@
 
 #define PORT 2222
 #define BLOCK_SIZE 4096
+#define EXIT_MESSAGE "exit"
 
-// Fonction pour recevoir un message d'erreur du serveur
-void receive_error_message(int server_socket) {
+// Fonction pour recevoir un message d'erreur du serveur avec timeout
+void receive_error_message(int server_socket)
+{
     size_t message_length;
+    struct timeval tv;
+    fd_set readfds;
 
+    // Initialiser le timeout à 5 secondes
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+
+    // Utiliser select pour attendre une donnée sur le socket avec un timeout
+    FD_ZERO(&readfds);
+    FD_SET(server_socket, &readfds);
+
+    int ret = select(server_socket + 1, &readfds, NULL, NULL, &tv);
+    if (ret == -1)
+    {
+        perror("select error");
+        return;
+    }
+    else if (ret == 0)
+    {
+        return;
+    }
+
+    // Si select retourne un résultat positif, il y a des données à lire
     // Recevoir la longueur du message
-    if (recv(server_socket, &message_length, sizeof(message_length), 0) <= 0) {
+    if (recv(server_socket, &message_length, sizeof(message_length), 0) <= 0)
+    {
         perror("Failed to receive message length");
         return;
     }
 
     // Allouer de la mémoire pour le message d'erreur
     char *error_message = (char *)malloc(message_length);
-    if (!error_message) {
+    if (!error_message)
+    {
         perror("Memory allocation failed");
         return;
     }
 
     // Recevoir le message d'erreur
-    if (recv(server_socket, error_message, message_length, 0) <= 0) {
+    if (recv(server_socket, error_message, message_length, 0) <= 0)
+    {
         perror("Failed to receive error message");
         free(error_message);
         return;
@@ -36,13 +63,24 @@ void receive_error_message(int server_socket) {
 
     // Afficher le message d'erreur
     printf("Server error: %s\n", error_message);
+
+    // Vérifier si le message d'erreur n'est pas vide
+    if (message_length > 1)
+    { // Si la longueur du message est supérieure à 1 (c'est-à-dire non vide)
+        printf("Exiting program due to received error message...\n");
+        free(error_message);
+        exit(EXIT_SUCCESS); // Quitter le programme
+    }
+
     free(error_message);
 }
 
 // Fonction pour envoyer le fichier au serveur
-void send_file(int server_socket, const char *filename) {
+void send_file(int server_socket, const char *filename)
+{
     FILE *file = fopen(filename, "rb");
-    if (!file) {
+    if (!file)
+    {
         perror("Failed to open file");
         return;
     }
@@ -60,24 +98,21 @@ void send_file(int server_socket, const char *filename) {
     // Recevoir et gérer un message d'erreur du serveur
     receive_error_message(server_socket);
 
-    // Si le serveur a un message d'erreur, ne pas continuer
-    printf("File not sent.\n");
-    fclose(file);
-    return;
-
     char block[BLOCK_SIZE];
     int bytes_read;
     size_t total_bytes_sent = 0;
 
     // Compression et envoi du fichier en blocs
     z_stream stream = {0};
-    if (deflateInit(&stream, Z_DEFAULT_COMPRESSION) != Z_OK) {
+    if (deflateInit(&stream, Z_DEFAULT_COMPRESSION) != Z_OK)
+    {
         perror("Compression initialization failed");
         fclose(file);
         return;
     }
 
-    while ((bytes_read = fread(block, 1, BLOCK_SIZE, file)) > 0) {
+    while ((bytes_read = fread(block, 1, BLOCK_SIZE, file)) > 0)
+    {
         stream.next_in = (unsigned char *)block;
         stream.avail_in = bytes_read;
 
@@ -86,7 +121,8 @@ void send_file(int server_socket, const char *filename) {
         stream.next_out = (unsigned char *)compressed_block;
         stream.avail_out = sizeof(compressed_block);
 
-        if (deflate(&stream, Z_NO_FLUSH) != Z_OK) {
+        if (deflate(&stream, Z_NO_FLUSH) != Z_OK)
+        {
             perror("Compression error");
             break;
         }
@@ -107,7 +143,8 @@ void send_file(int server_socket, const char *filename) {
         // Afficher la barre de progression et le taux d'envoi
         printf("\rProgress: [");
         int progress_blocks = (int)(progress / 2); // Divisé par 2 pour une largeur plus raisonnable
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 50; i++)
+        {
             if (i < progress_blocks)
                 printf("#");
             else
@@ -128,8 +165,10 @@ void send_file(int server_socket, const char *filename) {
     printf("\nFile sent successfully: %s (%zu bytes)\n", filename, total_bytes_sent);
 }
 
-int main(int argc, char *argv[]) {
-    if (argc != 3) {
+int main(int argc, char *argv[])
+{
+    if (argc != 3)
+    {
         fprintf(stderr, "Usage: %s <server_ip> <file_to_send>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
@@ -139,7 +178,8 @@ int main(int argc, char *argv[]) {
 
     // Créer la socket
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket < 0) {
+    if (server_socket < 0)
+    {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
@@ -151,14 +191,16 @@ int main(int argc, char *argv[]) {
     server_addr.sin_port = htons(PORT);
 
     // Convertir l'adresse IP en forme binaire
-    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0)
+    {
         perror("Invalid address");
         close(server_socket);
         exit(EXIT_FAILURE);
     }
 
     // Se connecter au serveur
-    if (connect(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
         perror("Connection failed");
         close(server_socket);
         exit(EXIT_FAILURE);
