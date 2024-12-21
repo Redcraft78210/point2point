@@ -7,6 +7,24 @@
 
 #define BLOCK_SIZE 4096
 
+void print_progress_bar(size_t current, size_t total) {
+    int bar_width = 50; // Width of the progress bar
+    float progress = (float)current / total;
+    int position = bar_width * progress;
+
+    printf("\r[");
+    for (int i = 0; i < bar_width; i++) {
+        if (i < position)
+            printf("=");
+        else if (i == position)
+            printf(">");
+        else
+            printf(" ");
+    }
+    printf("] %3.0f%%", progress * 100);
+    fflush(stdout);
+}
+
 void send_file(int socket_fd, const char *filename) {
     FILE *file = fopen(filename, "rb");
     if (!file) {
@@ -15,9 +33,22 @@ void send_file(int socket_fd, const char *filename) {
         return;
     }
 
+    // Get file size for progress bar
+    fseek(file, 0, SEEK_END);
+    size_t total_size = ftell(file);
+    rewind(file);
+
+    // Send file name to server
+    size_t filename_length = strlen(filename) + 1; // Include null terminator
+    send(socket_fd, &filename_length, sizeof(filename_length), 0);
+    send(socket_fd, filename, filename_length, 0);
+
     char buffer[BLOCK_SIZE];
     char compressed_buffer[BLOCK_SIZE * 2];
+    size_t bytes_sent = 0;
     int read_size;
+
+    printf("Sending file: %s (%zu bytes)\n", filename, total_size);
 
     while ((read_size = fread(buffer, 1, BLOCK_SIZE, file)) > 0) {
         // Compress block
@@ -38,6 +69,9 @@ void send_file(int socket_fd, const char *filename) {
 
         // Send compressed block
         send(socket_fd, compressed_buffer, compressed_size, 0);
+
+        bytes_sent += read_size;
+        print_progress_bar(bytes_sent, total_size);
     }
 
     // Send end of file signal
@@ -46,7 +80,7 @@ void send_file(int socket_fd, const char *filename) {
 
     fclose(file);
     close(socket_fd);
-    printf("File sent successfully.\n");
+    printf("\nFile sent successfully.\n");
 }
 
 int main(int argc, char *argv[]) {
