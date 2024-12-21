@@ -57,8 +57,9 @@ void receive_file(int client_socket, const char *dest_dir) {
     snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
 
     // Check if file already exists
-    if (access(full_path, F_OK) == 0) {
-        fprintf(stderr, "Error: File %s already exists.\n", full_path);
+    FILE *existing_file = fopen(full_path, "rb");
+    if (existing_file) {
+        fclose(existing_file);
         send_error(client_socket, "File already exists");
         close(client_socket);
         return;
