@@ -59,6 +59,7 @@ void receive_file(int client_socket, const char *dest_dir) {
     // Check if file already exists
     if (access(full_path, F_OK) == 0) {
         fprintf(stderr, "Error: File %s already exists.\n", full_path);
+        send_error(client_socket, "File already exists");
         close(client_socket);
         return;
     }
@@ -66,6 +67,7 @@ void receive_file(int client_socket, const char *dest_dir) {
     FILE *file = fopen(full_path, "wb");
     if (!file) {
         perror("Failed to open file for writing");
+        send_error(client_socket, "Failed to open file");
         close(client_socket);
         return;
     }
