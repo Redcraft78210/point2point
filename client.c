@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define PORT 2222
 #define BLOCK_SIZE 4096
@@ -92,8 +93,13 @@ void send_file(int server_socket, const char *filename)
 
     // Envoyer le nom du fichier
     size_t filename_length = strlen(filename) + 1;
-    send(server_socket, &filename_length, sizeof(filename_length), 0);
-    send(server_socket, filename, filename_length, 0);
+    if (send(server_socket, &filename_length, sizeof(filename_length), 0) == -1 ||
+        send(server_socket, filename, filename_length, 0) == -1)
+    {
+        perror("Failed to send filename");
+        fclose(file);
+        return;
+    }
 
     // Recevoir et gérer un message d'erreur du serveur
     receive_error_message(server_socket);
@@ -101,6 +107,7 @@ void send_file(int server_socket, const char *filename)
     char block[BLOCK_SIZE];
     int bytes_read;
     size_t total_bytes_sent = 0;
+    clock_t start_time = clock();
 
     // Compression et envoi du fichier en blocs
     z_stream stream = {0};
@@ -130,15 +137,22 @@ void send_file(int server_socket, const char *filename)
         size_t compressed_size = sizeof(compressed_block) - stream.avail_out;
 
         // Envoyer la taille du bloc compressé
-        send(server_socket, &compressed_size, sizeof(compressed_size), 0);
-
-        // Envoyer le bloc compressé
-        send(server_socket, compressed_block, compressed_size, 0);
+        if (send(server_socket, &compressed_size, sizeof(compressed_size), 0) == -1 ||
+            send(server_socket, compressed_block, compressed_size, 0) == -1)
+        {
+            perror("Failed to send compressed block");
+            break;
+        }
 
         total_bytes_sent += compressed_size;
 
         // Calculer le pourcentage d'envoi
         float progress = ((float)total_bytes_sent / total_file_size) * 100;
+
+        // Calculer la vitesse d'envoi
+        clock_t elapsed_time = clock() - start_time;
+        double seconds = (double)elapsed_time / CLOCKS_PER_SEC;
+        double speed = (total_bytes_sent / 1024.0) / seconds;
 
         // Afficher la barre de progression et le taux d'envoi
         printf("\rProgress: [");
@@ -150,14 +164,17 @@ void send_file(int server_socket, const char *filename)
             else
                 printf(" ");
         }
-        printf("] %.2f%% | Sent: %.2f KB/s", progress, (total_bytes_sent / 1024.0));
+        printf("] %.2f%% | Sent: %.2f KB/s", progress, speed);
 
         fflush(stdout); // Forcer l'affichage de la barre de progression
     }
 
     // Envoyer le dernier bloc avec la taille de 0 pour indiquer la fin du fichier
     int block_size = 0;
-    send(server_socket, &block_size, sizeof(block_size), 0);
+    if (send(server_socket, &block_size, sizeof(block_size), 0) == -1)
+    {
+        perror("Failed to send final block size");
+    }
 
     deflateEnd(&stream);
     fclose(file);
