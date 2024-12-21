@@ -4,21 +4,69 @@
 #include <arpa/inet.h>
 #include <zlib.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 #define PORT 2222
 #define BLOCK_SIZE 4096
+#define DEFAULT_DIR "uploads"
 
-void receive_file(int client_socket, const char *output_filename) {
-    FILE *file = fopen(output_filename, "wb");
-    if (!file) {
-        perror("Failed to open file");
+void ensure_directory_exists(const char *dir) {
+    struct stat st;
+    if (stat(dir, &st) == -1) {
+        if (mkdir(dir, 0755) < 0) {
+            perror("Failed to create directory");
+            exit(EXIT_FAILURE);
+        }
+    } else if (!S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "Error: %s exists but is not a directory.\n", dir);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void receive_file(int client_socket, const char *dest_dir) {
+    char filename[256];
+    size_t filename_length;
+
+    // Receive filename length
+    if (recv(client_socket, &filename_length, sizeof(filename_length), 0) <= 0) {
+        perror("Failed to receive filename length");
         close(client_socket);
         return;
     }
 
+    // Receive filename
+    if (recv(client_socket, filename, filename_length, 0) <= 0) {
+        perror("Failed to receive filename");
+        close(client_socket);
+        return;
+    }
+    filename[filename_length - 1] = '\0'; // Ensure null termination
+
+    // Construct full path
+    char full_path[512];
+    snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
+
+    // Check if file already exists
+    if (access(full_path, F_OK) == 0) {
+        fprintf(stderr, "Error: File %s already exists.\n", full_path);
+        close(client_socket);
+        return;
+    }
+
+    FILE *file = fopen(full_path, "wb");
+    if (!file) {
+        perror("Failed to open file for writing");
+        close(client_socket);
+        return;
+    }
+
+    printf("Receiving file: %s\n", full_path);
+
     int block_size;
     char compressed_block[BLOCK_SIZE * 2];
     char decompressed_block[BLOCK_SIZE];
+    size_t total_bytes_received = 0;
 
     while (1) {
         // Receive block size
@@ -28,7 +76,11 @@ void receive_file(int client_socket, const char *output_filename) {
         if (block_size == 0) break;
 
         // Receive compressed block
-        recv(client_socket, compressed_block, block_size, 0);
+        ssize_t bytes_received = recv(client_socket, compressed_block, block_size, 0);
+        if (bytes_received != block_size) {
+            perror("Failed to receive complete block");
+            break;
+        }
 
         // Decompress block
         z_stream stream = {0};
@@ -40,34 +92,70 @@ void receive_file(int client_socket, const char *output_filename) {
 
         if (inflate(&stream, Z_FINISH) == Z_STREAM_END) {
             fwrite(decompressed_block, 1, stream.total_out, file);
+            total_bytes_received += stream.total_out;
+        } else {
+            perror("Decompression error");
+            inflateEnd(&stream);
+            break;
         }
         inflateEnd(&stream);
     }
 
     fclose(file);
     close(client_socket);
-    printf("File received and written to %s\n", output_filename);
+    printf("File received successfully: %s (%zu bytes)\n", full_path, total_bytes_received);
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    const char *dest_dir = DEFAULT_DIR;
+
+    if (argc == 2) {
+        dest_dir = argv[1];
+    }
+
+    ensure_directory_exists(dest_dir);
+
     int server_fd, client_socket;
     struct sockaddr_in server_addr, client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    listen(server_fd, 1);
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 1) < 0) {
+        perror("Listen failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
 
     printf("Server listening on port %d...\n", PORT);
+    printf("Files will be saved to: %s\n", dest_dir);
 
     client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+    if (client_socket < 0) {
+        perror("Accept failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
     printf("Client connected.\n");
 
-    receive_file(client_socket, "output_file");
+    receive_file(client_socket, dest_dir);
+
     close(server_fd);
     return 0;
 }
