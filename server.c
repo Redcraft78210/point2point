@@ -24,6 +24,12 @@ void ensure_directory_exists(const char *dir) {
     }
 }
 
+void send_error(int client_socket, const char *message) {
+    size_t message_length = strlen(message) + 1; // Include null terminator
+    send(client_socket, &message_length, sizeof(message_length), 0);
+    send(client_socket, message, message_length, 0);
+}
+
 void receive_file(int client_socket, const char *dest_dir) {
     char filename[256];
     size_t filename_length;

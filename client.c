@@ -74,6 +74,18 @@ void send_file(int socket_fd, const char *filename) {
         print_progress_bar(bytes_sent, total_size);
     }
 
+    // Receive error message (if any)
+    size_t message_length;
+    if (recv(socket_fd, &message_length, sizeof(message_length), 0) > 0) {
+        char message[256];
+        if (recv(socket_fd, message, message_length, 0) > 0) {
+            fprintf(stderr, "Error from server: %s\n", message);
+            fclose(file);
+            close(socket_fd);
+            return;
+        }
+    }
+
     // Send end of file signal
     int end_signal = 0;
     send(socket_fd, &end_signal, sizeof(end_signal), 0);
