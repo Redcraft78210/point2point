@@ -125,6 +125,7 @@ void receive_file(int client_socket, const char *dest_dir)
             perror("Failed to receive complete block");
             break;
         }
+        printf("Received block of size: %d\n", block_size);
 
         // Decompress block
         stream.next_in = (unsigned char *)compressed_block;
