@@ -11,6 +11,7 @@
 #define BLOCK_SIZE 4096
 #define DEFAULT_DIR "uploads"
 
+// Function to ensure the destination directory exists
 void ensure_directory_exists(const char *dir) {
     struct stat st;
     if (stat(dir, &st) == -1) {
@@ -24,12 +25,14 @@ void ensure_directory_exists(const char *dir) {
     }
 }
 
+// Function to send error message to the client
 void send_error(int client_socket, const char *message) {
     size_t message_length = strlen(message) + 1; // Include null terminator
     send(client_socket, &message_length, sizeof(message_length), 0);
     send(client_socket, message, message_length, 0);
 }
 
+// Function to receive and decompress the file
 void receive_file(int client_socket, const char *dest_dir) {
     char filename[256];
     size_t filename_length;
@@ -55,7 +58,8 @@ void receive_file(int client_socket, const char *dest_dir) {
 
     // Check if file already exists
     if (access(full_path, F_OK) == 0) {
-        send_error(client_socket, "Error: File already exists on the server.");
+        fprintf(stderr, "Error: File %s already exists.\n", full_path);
+        send_error(client_socket, "File already exists");
         close(client_socket);
         return;
     }
@@ -74,8 +78,7 @@ void receive_file(int client_socket, const char *dest_dir) {
     char decompressed_block[BLOCK_SIZE];
     size_t total_bytes_received = 0;
 
-    z_stream stream = {0};
-    inflateInit(&stream);
+    z_stream stream = {0}; // Initialize zlib stream
 
     while (1) {
         // Receive block size
@@ -84,7 +87,7 @@ void receive_file(int client_socket, const char *dest_dir) {
             break;
         }
 
-        // End of file signal
+        // End of file signal (block size of 0)
         if (block_size == 0) break;
 
         // Receive compressed block
@@ -94,30 +97,39 @@ void receive_file(int client_socket, const char *dest_dir) {
             break;
         }
 
-        // Decompress block
+        // Initialize decompression stream if it's not already initialized
+        if (stream.avail_in == 0) {
+            if (inflateInit(&stream) != Z_OK) {
+                perror("Failed to initialize zlib stream for decompression");
+                break;
+            }
+        }
+
+        // Set input for decompression
         stream.next_in = (unsigned char *)compressed_block;
-        stream.avail_in = bytes_received;
+        stream.avail_in = block_size;
         stream.next_out = (unsigned char *)decompressed_block;
         stream.avail_out = BLOCK_SIZE;
 
-        int ret = inflate(&stream, Z_NO_FLUSH);
-        if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR) {
+        // Decompress the block
+        if (inflate(&stream, Z_NO_FLUSH) != Z_OK) {
             perror("Decompression error");
             break;
         }
 
+        // Write the decompressed data to file
         fwrite(decompressed_block, 1, stream.total_out, file);
         total_bytes_received += stream.total_out;
 
-        // Reset the stream after each block
-        if (stream.avail_in == 0) {
-            inflateReset(&stream);
-        }
-
-        // Show progress (optional)
-        // print_progress_bar(total_bytes_received, total_size); // You can uncomment this if you want to show progress.
+        // Reset the decompression stream for the next block
+        inflateReset(&stream);
     }
 
+    // Finish decompression (in case of remaining data)
+    inflate(&stream, Z_FINISH);
+    fwrite(decompressed_block, 1, stream.total_out, file);
+
+    // Cleanup
     inflateEnd(&stream);
 
     fclose(file);
