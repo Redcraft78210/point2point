@@ -25,6 +25,12 @@ void print_progress_bar(size_t current, size_t total) {
     fflush(stdout);
 }
 
+void send_error(int socket_fd, const char *message) {
+    size_t message_length = strlen(message) + 1; // Include null terminator
+    send(socket_fd, &message_length, sizeof(message_length), 0);
+    send(socket_fd, message, message_length, 0);
+}
+
 void send_file(int socket_fd, const char *filename) {
     FILE *file = fopen(filename, "rb");
     if (!file) {
@@ -50,17 +56,18 @@ void send_file(int socket_fd, const char *filename) {
 
     printf("Sending file: %s (%zu bytes)\n", filename, total_size);
 
+    z_stream stream = {0};
+    deflateInit(&stream, Z_BEST_SPEED);
+
     while ((read_size = fread(buffer, 1, BLOCK_SIZE, file)) > 0) {
         // Compress block
-        z_stream stream = {0};
-        deflateInit(&stream, Z_BEST_SPEED);
         stream.next_in = (unsigned char *)buffer;
         stream.avail_in = read_size;
         stream.next_out = (unsigned char *)compressed_buffer;
         stream.avail_out = sizeof(compressed_buffer);
 
-        deflate(&stream, Z_FINISH);
-        deflateEnd(&stream);
+        // Compress the data
+        deflate(&stream, Z_NO_FLUSH);
 
         int compressed_size = stream.total_out;
 
@@ -72,7 +79,16 @@ void send_file(int socket_fd, const char *filename) {
 
         bytes_sent += read_size;
         print_progress_bar(bytes_sent, total_size);
+
+        // Reset the stream after each block
+        deflateReset(&stream);
     }
+
+    // Finish compression
+    deflate(&stream, Z_FINISH);
+    int compressed_size = stream.total_out;
+    send(socket_fd, &compressed_size, sizeof(compressed_size), 0);
+    send(socket_fd, compressed_buffer, compressed_size, 0);
 
     // Receive error message (if any)
     size_t message_length;
