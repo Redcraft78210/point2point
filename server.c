@@ -95,6 +95,16 @@ void receive_file(int client_socket, const char *dest_dir)
     char decompressed_block[BLOCK_SIZE];
     size_t total_bytes_received = 0;
 
+    // Initialize the decompression stream
+    z_stream stream = {0};
+    if (inflateInit(&stream) != Z_OK)
+    {
+        perror("Failed to initialize zlib stream");
+        fclose(file);
+        close(client_socket);
+        return;
+    }
+
     while (1)
     {
         // Receive block size
@@ -114,26 +124,28 @@ void receive_file(int client_socket, const char *dest_dir)
         }
 
         // Decompress block
-        z_stream stream = {0};
-        inflateInit(&stream);
         stream.next_in = (unsigned char *)compressed_block;
         stream.avail_in = block_size;
         stream.next_out = (unsigned char *)decompressed_block;
         stream.avail_out = BLOCK_SIZE;
 
-        if (inflate(&stream, Z_FINISH) == Z_STREAM_END)
-        {
-            fwrite(decompressed_block, 1, stream.total_out, file);
-            total_bytes_received += stream.total_out;
-        }
-        else
+        int ret = inflate(&stream, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END)
         {
             perror("Decompression error");
-            inflateEnd(&stream);
             break;
         }
-        inflateEnd(&stream);
+
+        size_t decompressed_size = BLOCK_SIZE - stream.avail_out;
+        fwrite(decompressed_block, 1, decompressed_size, file);
+        total_bytes_received += decompressed_size;
+
+        if (ret == Z_STREAM_END)
+            break;
     }
+
+    // Clean up
+    inflateEnd(&stream);
 
     fclose(file);
     close(client_socket);
