@@ -57,10 +57,8 @@ void receive_file(int client_socket, const char *dest_dir) {
     snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
 
     // Check if file already exists
-    FILE *existing_file = fopen(full_path, "rb");
-    if (existing_file) {
-        fclose(existing_file);
-        send_error(client_socket, "File already exists");
+    if (access(full_path, F_OK) == 0) {
+        fprintf(stderr, "Error: File %s already exists.\n", full_path);
         close(client_socket);
         return;
     }
@@ -79,8 +77,6 @@ void receive_file(int client_socket, const char *dest_dir) {
     char decompressed_block[BLOCK_SIZE];
     size_t total_bytes_received = 0;
 
-    z_stream stream = {0}; // Initialize zlib stream
-
     while (1) {
         // Receive block size
         if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0) break;
@@ -95,41 +91,24 @@ void receive_file(int client_socket, const char *dest_dir) {
             break;
         }
 
-        // Initialize decompression stream if it's not already initialized
-        if (stream.avail_in == 0) {
-            if (inflateInit(&stream) != Z_OK) {
-                perror("Failed to initialize zlib stream for decompression");
-                break;
-            }
-        }
-
-        // Set input for decompression
+        // Decompress block
+        z_stream stream = {0};
+        inflateInit(&stream);
         stream.next_in = (unsigned char *)compressed_block;
         stream.avail_in = block_size;
         stream.next_out = (unsigned char *)decompressed_block;
         stream.avail_out = BLOCK_SIZE;
 
-        // Decompress the block
-        if (inflate(&stream, Z_NO_FLUSH) != Z_OK) {
+        if (inflate(&stream, Z_FINISH) == Z_STREAM_END) {
+            fwrite(decompressed_block, 1, stream.total_out, file);
+            total_bytes_received += stream.total_out;
+        } else {
             perror("Decompression error");
             inflateEnd(&stream);
             break;
         }
-
-        // Write the decompressed data to file
-        fwrite(decompressed_block, 1, stream.total_out, file);
-        total_bytes_received += stream.total_out;
-
-        // Reset the decompression stream for the next block
-        inflateReset(&stream);
+        inflateEnd(&stream);
     }
-
-    // Finish decompression (in case of remaining data)
-    inflate(&stream, Z_FINISH);
-    fwrite(decompressed_block, 1, stream.total_out, file);
-
-    // Cleanup
-    inflateEnd(&stream);
 
     fclose(file);
     close(client_socket);
