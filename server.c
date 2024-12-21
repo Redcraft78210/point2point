@@ -5,7 +5,6 @@
 #include <zlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <errno.h>
 
 #define PORT 2222
 #define BLOCK_SIZE 4096
@@ -23,6 +22,12 @@ void ensure_directory_exists(const char *dir) {
         fprintf(stderr, "Error: %s exists but is not a directory.\n", dir);
         exit(EXIT_FAILURE);
     }
+}
+
+// Function to check if the file exists on the server
+int file_exists(const char *file_path) {
+    struct stat st;
+    return stat(file_path, &st) == 0;
 }
 
 // Function to send error message to the client
@@ -57,8 +62,8 @@ void receive_file(int client_socket, const char *dest_dir) {
     snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
 
     // Check if file already exists
-    if (access(full_path, F_OK) == 0) {
-        fprintf(stderr, "Error: File %s already exists.\n", full_path);
+    if (file_exists(full_path)) {
+        // Send error message to the client if the file exists
         send_error(client_socket, "File already exists.");
         close(client_socket);
         return;
