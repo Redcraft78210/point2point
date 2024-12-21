@@ -171,6 +171,6 @@ int main(int argc, char *argv[]) {
 
     receive_file(client_socket, dest_dir);
 
-    close(server_fd);
+    close(server_fd); // Ensure that server socket is closed properly
     return 0;
 }
