@@ -5,121 +5,87 @@
 #include <zlib.h>
 #include <unistd.h>
 
-#define PORT 2222
 #define BLOCK_SIZE 4096
 
-void receive_file(int client_socket) {
-    char filename[256];
-    size_t filename_length;
-
-    // Receive filename length
-    if (recv(client_socket, &filename_length, sizeof(filename_length), 0) <= 0) {
-        perror("Failed to receive filename length");
-        close(client_socket);
-        return;
-    }
-
-    // Receive filename
-    if (recv(client_socket, filename, filename_length, 0) <= 0) {
-        perror("Failed to receive filename");
-        close(client_socket);
-        return;
-    }
-    filename[filename_length - 1] = '\0'; // Ensure null termination
-
-    FILE *file = fopen(filename, "wb");
+void send_file(int socket_fd, const char *filename) {
+    FILE *file = fopen(filename, "rb");
     if (!file) {
-        perror("Failed to open file for writing");
-        close(client_socket);
+        perror("Failed to open file");
+        close(socket_fd);
         return;
     }
 
-    printf("Receiving file: %s\n", filename);
+    char buffer[BLOCK_SIZE];
+    char compressed_buffer[BLOCK_SIZE * 2];
+    int read_size;
 
-    int block_size;
-    char compressed_block[BLOCK_SIZE * 2];
-    char decompressed_block[BLOCK_SIZE];
-    size_t total_bytes_received = 0;
-
-    while (1) {
-        // Receive block size
-        if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0) break;
-
-        // End of file signal
-        if (block_size == 0) break;
-
-        // Receive compressed block
-        ssize_t bytes_received = recv(client_socket, compressed_block, block_size, 0);
-        if (bytes_received != block_size) {
-            perror("Failed to receive complete block");
-            break;
-        }
-
-        // Decompress block
+    while ((read_size = fread(buffer, 1, BLOCK_SIZE, file)) > 0) {
+        // Compress block
         z_stream stream = {0};
-        inflateInit(&stream);
-        stream.next_in = (unsigned char *)compressed_block;
-        stream.avail_in = block_size;
-        stream.next_out = (unsigned char *)decompressed_block;
-        stream.avail_out = BLOCK_SIZE;
+        deflateInit(&stream, Z_BEST_SPEED);
+        stream.next_in = (unsigned char *)buffer;
+        stream.avail_in = read_size;
+        stream.next_out = (unsigned char *)compressed_buffer;
+        stream.avail_out = sizeof(compressed_buffer);
 
-        if (inflate(&stream, Z_FINISH) == Z_STREAM_END) {
-            fwrite(decompressed_block, 1, stream.total_out, file);
-            total_bytes_received += stream.total_out;
-        } else {
-            perror("Decompression error");
-            inflateEnd(&stream);
-            break;
-        }
-        inflateEnd(&stream);
+        deflate(&stream, Z_FINISH);
+        deflateEnd(&stream);
+
+        int compressed_size = stream.total_out;
+
+        // Send block size
+        send(socket_fd, &compressed_size, sizeof(compressed_size), 0);
+
+        // Send compressed block
+        send(socket_fd, compressed_buffer, compressed_size, 0);
     }
+
+    // Send end of file signal
+    int end_signal = 0;
+    send(socket_fd, &end_signal, sizeof(end_signal), 0);
 
     fclose(file);
-    close(client_socket);
-    printf("File received successfully: %s (%zu bytes)\n", filename, total_bytes_received);
+    close(socket_fd);
+    printf("File sent successfully.\n");
 }
 
-int main() {
-    int server_fd, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t addr_len = sizeof(client_addr);
+int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <IP_ADDRESS> <PORT> <FILE_TO_SEND>\n", argv[0]);
+        return 1;
+    }
 
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
+    const char *ip_address = argv[1];
+    int port = atoi(argv[2]);
+    const char *filename = argv[3];
+
+    int socket_fd;
+    struct sockaddr_in server_addr;
+
+    socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_fd < 0) {
         perror("Socket creation failed");
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_port = htons(port);
 
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Bind failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
+    if (inet_pton(AF_INET, ip_address, &server_addr.sin_addr) <= 0) {
+        perror("Invalid IP address");
+        close(socket_fd);
+        return 1;
     }
 
-    if (listen(server_fd, 1) < 0) {
-        perror("Listen failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
+    if (connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Connection to server failed");
+        close(socket_fd);
+        return 1;
     }
 
-    printf("Server listening on port %d...\n", PORT);
+    printf("Connected to server at %s:%d\n", ip_address, port);
+    send_file(socket_fd, filename);
 
-    client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-    if (client_socket < 0) {
-        perror("Accept failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Client connected.\n");
-
-    receive_file(client_socket);
-
-    close(server_fd);
     return 0;
 }
