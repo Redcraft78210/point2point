@@ -55,7 +55,7 @@ void receive_file(int client_socket, const char *dest_dir) {
 
     // Check if file already exists
     if (access(full_path, F_OK) == 0) {
-        fprintf(stderr, "Error: File %s already exists.\n", full_path);
+        send_error(client_socket, "Error: File already exists on the server.");
         close(client_socket);
         return;
     }
@@ -74,9 +74,15 @@ void receive_file(int client_socket, const char *dest_dir) {
     char decompressed_block[BLOCK_SIZE];
     size_t total_bytes_received = 0;
 
+    z_stream stream = {0};
+    inflateInit(&stream);
+
     while (1) {
         // Receive block size
-        if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0) break;
+        if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0) {
+            perror("Failed to receive block size");
+            break;
+        }
 
         // End of file signal
         if (block_size == 0) break;
@@ -89,23 +95,30 @@ void receive_file(int client_socket, const char *dest_dir) {
         }
 
         // Decompress block
-        z_stream stream = {0};
-        inflateInit(&stream);
         stream.next_in = (unsigned char *)compressed_block;
-        stream.avail_in = block_size;
+        stream.avail_in = bytes_received;
         stream.next_out = (unsigned char *)decompressed_block;
         stream.avail_out = BLOCK_SIZE;
 
-        if (inflate(&stream, Z_FINISH) == Z_STREAM_END) {
-            fwrite(decompressed_block, 1, stream.total_out, file);
-            total_bytes_received += stream.total_out;
-        } else {
+        int ret = inflate(&stream, Z_NO_FLUSH);
+        if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR) {
             perror("Decompression error");
-            inflateEnd(&stream);
             break;
         }
-        inflateEnd(&stream);
+
+        fwrite(decompressed_block, 1, stream.total_out, file);
+        total_bytes_received += stream.total_out;
+
+        // Reset the stream after each block
+        if (stream.avail_in == 0) {
+            inflateReset(&stream);
+        }
+
+        // Show progress (optional)
+        // print_progress_bar(total_bytes_received, total_size); // You can uncomment this if you want to show progress.
     }
+
+    inflateEnd(&stream);
 
     fclose(file);
     close(client_socket);
