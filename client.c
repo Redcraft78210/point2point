@@ -36,19 +36,19 @@ void receive_error_message(int server_socket)
     }
     else if (ret == 0)
     {
-        return;  // Timeout, pas de données reçues
+        printf("Timeout reached while waiting for error message from server.\n");
+        return; // Timeout, pas de données reçues
     }
 
     // Si select retourne un résultat positif, il y a des données à lire
     // Recevoir la longueur du message
     if (recv(server_socket, &message_length, sizeof(message_length), 0) <= 0)
     {
-        if (errno == ECONNRESET)
-        {
+        if (errno == ECONNRESET) {
             perror("Connection reset by peer");
-        }
-        else
-        {
+        } else if (errno == 0) {
+            printf("Connection closed by server\n");
+        } else {
             perror("Failed to receive message length");
         }
         return;
@@ -65,12 +65,9 @@ void receive_error_message(int server_socket)
     // Recevoir le message d'erreur
     if (recv(server_socket, error_message, message_length, 0) <= 0)
     {
-        if (errno == ECONNRESET)
-        {
+        if (errno == ECONNRESET) {
             perror("Connection reset by peer");
-        }
-        else
-        {
+        } else {
             perror("Failed to receive error message");
         }
         free(error_message);
@@ -85,7 +82,7 @@ void receive_error_message(int server_socket)
     { // Si la longueur du message est supérieure à 1 (c'est-à-dire non vide)
         printf("Exiting program due to received error message...\n");
         free(error_message);
-        exit(EXIT_SUCCESS); // Quitter le programme
+        exit(EXIT_FAILURE); // Quitter le programme
     }
 
     free(error_message);
@@ -160,7 +157,7 @@ void send_file(int server_socket, const char *filename)
         }
 
         sent = send(server_socket, compressed_block, compressed_size, 0);
-        if (sent == -1 || sent != compressed_size)
+        if (sent == -1 || (size_t)sent != compressed_size)
         {
             perror("Failed to send compressed block");
             break;
@@ -201,7 +198,15 @@ void send_file(int server_socket, const char *filename)
     deflateEnd(&stream);
     fclose(file);
 
-    printf("\nFile sent successfully: %s (%zu bytes)\n", filename, total_bytes_sent);
+    // Vérifier si tout le fichier a été envoyé
+    if (total_bytes_sent == total_file_size)
+    {
+        printf("\nFile sent successfully: %s (%zu bytes)\n", filename, total_bytes_sent);
+    }
+    else
+    {
+        printf("\nError: Only %zu bytes were sent out of %zu bytes.\n", total_bytes_sent, total_file_size);
+    }
 }
 
 int main(int argc, char *argv[])
@@ -214,6 +219,13 @@ int main(int argc, char *argv[])
 
     const char *server_ip = argv[1];
     const char *filename = argv[2];
+
+    // Vérification si le fichier existe
+    if (access(filename, F_OK) == -1)
+    {
+        perror("File does not exist");
+        exit(EXIT_FAILURE);
+    }
 
     // Créer la socket
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);

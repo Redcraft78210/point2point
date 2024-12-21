@@ -11,7 +11,7 @@
 #define DEFAULT_DIR "uploads"
 #define MAX_FILENAME_LENGTH 255
 
-// Function to ensure the destination directory exists
+// Fonction pour s'assurer que le répertoire de destination existe
 void ensure_directory_exists(const char *dir)
 {
     struct stat st;
@@ -19,104 +19,104 @@ void ensure_directory_exists(const char *dir)
     {
         if (mkdir(dir, 0755) < 0)
         {
-            perror("Failed to create directory");
+            perror("Échec de la création du répertoire");
             exit(EXIT_FAILURE);
         }
     }
     else if (!S_ISDIR(st.st_mode))
     {
-        fprintf(stderr, "Error: %s exists but is not a directory.\n", dir);
+        fprintf(stderr, "Erreur : %s existe mais n'est pas un répertoire.\n", dir);
         exit(EXIT_FAILURE);
     }
 }
 
-// Function to check if the file exists on the server
+// Fonction pour vérifier si le fichier existe déjà sur le serveur
 int file_exists(const char *file_path)
 {
     struct stat st;
     return stat(file_path, &st) == 0;
 }
 
-// Function to send error message to the client
+// Fonction pour envoyer un message d'erreur au client
 void send_error(int client_socket, const char *message)
 {
-    size_t message_length = strlen(message) + 1; // Include null terminator
+    size_t message_length = strlen(message) + 1; // Inclure le terminator nul
     send(client_socket, &message_length, sizeof(message_length), 0);
     send(client_socket, message, message_length, 0);
 }
 
-// Function to receive and decompress the file
+// Fonction pour recevoir et décompresser le fichier
 void receive_file(int client_socket, const char *dest_dir)
 {
-    char filename[MAX_FILENAME_LENGTH + 1]; // Allow space for the null terminator
+    char filename[MAX_FILENAME_LENGTH + 1]; // Permet l'espace pour le terminator nul
     size_t filename_length;
 
-    // Receive the filename length
+    // Recevoir la longueur du nom de fichier
     if (recv(client_socket, &filename_length, sizeof(filename_length), 0) <= 0)
     {
-        perror("Failed to receive filename length");
+        perror("Échec de la réception de la longueur du nom du fichier");
         close(client_socket);
         return;
     }
 
-    // Check filename length
+    // Vérifier la longueur du nom de fichier
     if (filename_length > MAX_FILENAME_LENGTH)
     {
-        send_error(client_socket, "Filename is too long.");
+        send_error(client_socket, "Le nom du fichier est trop long.");
         close(client_socket);
         return;
     }
 
-    // Receive the filename
+    // Recevoir le nom du fichier
     if (recv(client_socket, filename, filename_length, 0) <= 0)
     {
-        perror("Failed to receive filename");
+        perror("Échec de la réception du nom du fichier");
         close(client_socket);
         return;
     }
-    filename[filename_length - 1] = '\0'; // Ensure null termination
+    filename[filename_length - 1] = '\0'; // S'assurer de la terminaison nulle
 
-    // Sanity check for path traversal in filename
+    // Vérification de la traversée de répertoire dans le nom du fichier
     if (strstr(filename, "..") != NULL)
     {
-        send_error(client_socket, "Invalid filename.");
+        send_error(client_socket, "Nom de fichier invalide.");
         close(client_socket);
         return;
     }
 
-    // Build the full file path
+    // Construire le chemin complet du fichier
     char full_path[512];
     snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
 
-    // Check if file already exists
+    // Vérifier si le fichier existe déjà
     if (file_exists(full_path))
     {
-        send_error(client_socket, "File already exists.");
+        send_error(client_socket, "Le fichier existe déjà.");
         close(client_socket);
         return;
     }
 
-    // Open file for writing
+    // Ouvrir le fichier pour l'écriture
     FILE *file = fopen(full_path, "wb");
     if (!file)
     {
-        perror("Failed to open file for writing");
+        perror("Échec de l'ouverture du fichier pour l'écriture");
         close(client_socket);
         return;
     }
 
-    printf("Receiving file: %s\n", full_path);
+    printf("Réception du fichier : %s\n", full_path);
 
     int block_size;
     char compressed_block[BLOCK_SIZE * 2];
     char decompressed_block[BLOCK_SIZE];
     size_t total_bytes_received = 0;
 
-    // Initialize the decompression stream
+    // Initialiser le flux de décompression
     z_stream stream = {0};
     if (inflateInit(&stream) != Z_OK)
     {
-        perror("Failed to initialize zlib stream");
+        perror("Échec de l'initialisation du flux zlib");
         fclose(file);
         close(client_socket);
         return;
@@ -124,28 +124,28 @@ void receive_file(int client_socket, const char *dest_dir)
 
     while (1)
     {
-        // Receive block size
+        // Recevoir la taille du bloc
         ssize_t bytes_received = recv(client_socket, &block_size, sizeof(block_size), 0);
         if (bytes_received <= 0)
         {
-            perror("Failed to receive block size or connection closed");
+            perror("Échec de la réception de la taille du bloc ou connexion fermée");
             break;
         }
 
-        // End of file signal (block size 0)
+        // Signal de fin de fichier (taille du bloc 0)
         if (block_size == 0)
             break;
 
-        // Receive compressed block
+        // Recevoir le bloc compressé
         bytes_received = recv(client_socket, compressed_block, block_size, 0);
         if (bytes_received != block_size)
         {
-            perror("Failed to receive complete block");
+            perror("Échec de la réception complète du bloc");
             break;
         }
-        printf("Received block of size: %d\n", block_size);
+        printf("Bloc reçu de taille : %d\n", block_size);
 
-        // Decompress the block
+        // Décompresser le bloc
         stream.next_in = (unsigned char *)compressed_block;
         stream.avail_in = block_size;
         stream.next_out = (unsigned char *)decompressed_block;
@@ -154,25 +154,29 @@ void receive_file(int client_socket, const char *dest_dir)
         int ret = inflate(&stream, Z_NO_FLUSH);
         if (ret != Z_OK && ret != Z_STREAM_END)
         {
-            fprintf(stderr, "Decompression error: %d\n", ret);
+            fprintf(stderr, "Erreur de décompression : %d\n", ret);
             break;
         }
 
         size_t decompressed_size = BLOCK_SIZE - stream.avail_out;
-        fwrite(decompressed_block, 1, decompressed_size, file);
+        if (fwrite(decompressed_block, 1, decompressed_size, file) != decompressed_size)
+        {
+            perror("Échec de l'écriture dans le fichier");
+            break;
+        }
         total_bytes_received += decompressed_size;
 
-        // If this is the end of the stream
+        // Si c'est la fin du flux
         if (ret == Z_STREAM_END)
             break;
     }
 
-    // Clean up
+    // Nettoyer
     inflateEnd(&stream);
 
     fclose(file);
     close(client_socket);
-    printf("File received successfully: %s (%zu bytes)\n", full_path, total_bytes_received);
+    printf("Fichier reçu avec succès : %s (%zu octets)\n", full_path, total_bytes_received);
 }
 
 int main(int argc, char *argv[])
@@ -190,62 +194,63 @@ int main(int argc, char *argv[])
     struct sockaddr_in server_addr, client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
-    // Create socket
+    // Créer la socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
     {
-        perror("Socket creation failed");
+        perror("Échec de la création de la socket");
         exit(EXIT_FAILURE);
     }
 
-    // Allow immediate reuse of the address
+    // Permettre la réutilisation immédiate de l'adresse
     int opt = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
     {
-        perror("setsockopt(SO_REUSEADDR) failed");
+        perror("Échec de setsockopt(SO_REUSEADDR)");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
 
-    // Initialize server address
+    // Initialiser l'adresse du serveur
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    // Bind the socket to the address and port
+    // Lier la socket à l'adresse et au port
     if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
-        perror("Bind failed");
+        perror("Échec de bind");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
 
-    // Listen for incoming connections
+    // Écouter les connexions entrantes
     if (listen(server_fd, 1) < 0)
     {
-        perror("Listen failed");
+        perror("Échec de listen");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
 
-    printf("Server listening on port %d...\n", PORT);
-    printf("Files will be saved to: %s\n", dest_dir);
+    printf("Serveur en écoute sur le port %d...\n", PORT);
+    printf("Les fichiers seront enregistrés dans : %s\n", dest_dir);
 
     client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
     if (client_socket < 0)
     {
-        perror("Accept failed");
+        perror("Échec de accept");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
 
-    printf("Client connected.\n");
+    printf("Client connecté.\n");
 
     receive_file(client_socket, dest_dir);
 
-    // Close the connection properly before shutting down
-    shutdown(client_socket, SHUT_RDWR); // SHUT_RDWR indicates that the connection is done for both reading and writing
-    close(client_socket);               // Then properly close the socket
+    // Fermer la connexion et la socket serveur
+    shutdown(client_socket, SHUT_RDWR); 
+    close(client_socket);  // Fermer la socket du client
+    close(server_fd);      // Fermer la socket serveur
     return 0;
 }
