@@ -32,34 +32,34 @@ void send_error(int client_socket, const char *message) {
     send(client_socket, message, message_length, 0);
 }
 
-// Function to receive and decompress the file
+// Fonction modifiée pour envoyer un message d'erreur lorsque le fichier existe déjà
 void receive_file(int client_socket, const char *dest_dir) {
     char filename[256];
     size_t filename_length;
 
-    // Receive filename length
+    // Recevoir la longueur du nom du fichier
     if (recv(client_socket, &filename_length, sizeof(filename_length), 0) <= 0) {
         perror("Failed to receive filename length");
         close(client_socket);
         return;
     }
 
-    // Receive filename
+    // Recevoir le nom du fichier
     if (recv(client_socket, filename, filename_length, 0) <= 0) {
         perror("Failed to receive filename");
         close(client_socket);
         return;
     }
-    filename[filename_length - 1] = '\0'; // Ensure null termination
+    filename[filename_length - 1] = '\0'; // Assurez-vous que le nom du fichier est bien terminé par un '\0'
 
-    // Construct full path
+    // Construire le chemin complet
     char full_path[512];
     snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir, filename);
 
-    // Check if file already exists
+    // Vérifier si le fichier existe déjà
     if (access(full_path, F_OK) == 0) {
-        fprintf(stderr, "Error: File %s already exists.\n", full_path);
-        send_error(client_socket, "File already exists");
+        // Si le fichier existe déjà, envoyer un message d'erreur
+        send_error(client_socket, "Error: File already exists.");
         close(client_socket);
         return;
     }
@@ -80,20 +80,20 @@ void receive_file(int client_socket, const char *dest_dir) {
     size_t total_bytes_received = 0;
 
     while (1) {
-        // Receive block size
+        // Recevoir la taille du bloc
         if (recv(client_socket, &block_size, sizeof(block_size), 0) <= 0) break;
 
-        // End of file signal (block size of 0)
+        // Signal de fin de fichier (taille du bloc égale à 0)
         if (block_size == 0) break;
 
-        // Receive compressed block
+        // Recevoir le bloc compressé
         ssize_t bytes_received = recv(client_socket, compressed_block, block_size, 0);
         if (bytes_received != block_size) {
             perror("Failed to receive complete block");
             break;
         }
 
-        // Decompress block
+        // Décompresser le bloc
         z_stream stream = {0};
         inflateInit(&stream);
         stream.next_in = (unsigned char *)compressed_block;
@@ -116,6 +116,7 @@ void receive_file(int client_socket, const char *dest_dir) {
     close(client_socket);
     printf("File received successfully: %s (%zu bytes)\n", full_path, total_bytes_received);
 }
+
 
 int main(int argc, char *argv[]) {
     const char *dest_dir = DEFAULT_DIR;
