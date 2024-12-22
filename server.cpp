@@ -11,11 +11,15 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cassert>
+#include <cerrno>  // For errno
+#include <cstring> // For strerror()
 
 #define DEFAULT_PORT 12345
 #define CHUNK_SIZE 4096
+#define ACK_BUFFER_SIZE 256
 
-void showUsage() {
+void showUsage()
+{
     std::cout << "Usage: file_receiver [options]\n";
     std::cout << "  -h, --help            Display help\n";
     std::cout << "  -p, --port <port>      Port to listen on (default: 12345)\n";
@@ -25,84 +29,205 @@ void showUsage() {
 }
 
 // Error logging function
-void logError(const std::string &message) {
+void logError(const std::string &message)
+{
     std::cerr << "Error: " << message << std::endl;
 }
 
-// Decompress a chunk of data
-int decompress_chunk(const std::vector<char> &input_chunk, std::vector<char> &output_chunk) {
-    uLongf output_size = input_chunk.size() * 2; // Initial guess for decompressed size
-    std::vector<char> temp_buffer(output_size);
-
+// Function to decompress a chunk of data
+bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, bool verbose)
+{
+    uLongf outputSize = input.size() * 2; // Initial guess for decompressed size
+    std::vector<char> tempBuffer(outputSize);
     int result;
-    do {
-        result = uncompress(reinterpret_cast<Bytef *>(temp_buffer.data()), &output_size,
-                            reinterpret_cast<const Bytef *>(input_chunk.data()), input_chunk.size());
 
-        if (result == Z_BUF_ERROR) {
-            output_size *= 2;
-            temp_buffer.resize(output_size);
-        } else if (result != Z_OK) {
-            logError("Decompression error: " + std::to_string(result));
-            return result; // Return error code if it's not a buffer size error
+    while (true)
+    {
+        result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
+                            reinterpret_cast<const Bytef *>(input.data()), input.size());
+
+        if (result == Z_OK)
+        {
+            // Decompression successful
+            break;
         }
-    } while (result == Z_BUF_ERROR);
+        else if (result == Z_BUF_ERROR)
+        {
+            // Buffer size insufficient, double the buffer size
+            outputSize *= 2;
+            tempBuffer.resize(outputSize);
+        }
+        else
+        {
+            // Decompression error
+            std::cerr << "Decompression error: " << result << "\n";
+            return false;
+        }
+    }
 
-    output_chunk.insert(output_chunk.end(), temp_buffer.begin(), temp_buffer.begin() + output_size);
-    return Z_OK;
+    // Resize output to the actual decompressed size
+    output.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
+
+    if (verbose)
+    {
+        std::cout << "Decompressed chunk successfully. Original size: " << input.size()
+                  << ", Decompressed size: " << outputSize << " bytes.\n";
+    }
+
+    return true;
 }
 
 // Function to receive and save the file
-void saveReceivedFile(int clientSocket, const char *outputFileName, bool decompressFlag, bool verbose) {
-    std::ofstream outFile(outputFileName, std::ios::binary);
-    if (!outFile.is_open()) {
+void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompressFlag, bool verbose)
+{
+    char metadataBuffer[256];
+    struct sockaddr_in clientAddr;
+    socklen_t clientAddrLen = sizeof(clientAddr);
+    ssize_t metadataReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
+                                        (struct sockaddr *)&clientAddr, &clientAddrLen);
+
+    if (metadataReceived <= 0)
+    {
+        if (metadataReceived == 0)
+        {
+            logError("No data received!");
+        }
+        else
+        {
+            // Log the error message and errno description
+            logError("Failed to receive metadata! Error: " + std::string(strerror(errno)));
+        }
+        return;
+    }
+
+    // Vérification du format de la donnée reçue
+    std::string metadata(metadataBuffer, metadataReceived);
+    size_t delimiterPos = metadata.find('\0'); // Cherche le séparateur '\0'
+    if (delimiterPos == std::string::npos)
+    {
+        logError("Invalid metadata format received! No delimiter found.");
+        return;
+    }
+
+    std::string fileName = metadata.substr(0, delimiterPos);
+
+    // Assurer que la taille du fichier est correctement extraite après le délimiteur
+    std::string fileSizeStr = metadata.substr(delimiterPos + 1);
+    size_t fileSize = 0;
+
+    try
+    {
+        // Convertir la chaîne en taille
+        fileSize = std::stoull(fileSizeStr);
+    }
+    catch (const std::exception &e)
+    {
+        logError("Failed to parse file size from metadata! Error: " + std::string(e.what()));
+        return;
+    }
+
+    std::cout << "Receiving file: " << fileName << ", size: " << fileSize << " bytes\n";
+
+    // Ouverture du fichier en écriture
+    std::ofstream outFile(fileName, std::ios::binary);
+    if (!outFile.is_open())
+    {
         logError("Error opening output file!");
         return;
     }
 
-    char buffer[CHUNK_SIZE];
-    size_t bytesReceived = 0;
+    size_t totalBytesWritten = 0; // Variable pour suivre la progression
+    ssize_t bytesReceived = 0;
     std::vector<char> decompressedChunk;
 
-    if (verbose) {
-        std::cout << "Receiving file...\n";
-    }
+    // Boucle pour recevoir les données
+    while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
+                                     (struct sockaddr *)&clientAddr, &clientAddrLen)) > 0)
+    {
+        if (bytesReceived == -1)
+        {
+            logError("Error receiving data from client. Error: " + std::string(strerror(errno)));
+            break;
+        }
 
-    ssize_t received;
-    while ((received = recv(clientSocket, buffer, CHUNK_SIZE, 0)) > 0) {
-        bytesReceived += received;
+        if (decompressFlag)
+        {
+            // Décompression des données reçues
+            bool decompressionSuccess = decompressChunk(std::vector<char>(metadataBuffer, metadataBuffer + bytesReceived), decompressedChunk, verbose);
 
-        if (decompressFlag) {
-            std::vector<char> inputChunk(buffer, buffer + received);
-            decompressedChunk.clear();
-            int result = decompress_chunk(inputChunk, decompressedChunk);
+            if (!decompressionSuccess)
+            {
+                std::cerr << "Decompression error. Waiting for the client to resend the chunk.\n";
 
-            if (result != Z_OK) {
-                logError("Failed to decompress chunk!");
-                return;
+                // Send error message back to client asking for re-compression or resending the chunk
+                const char *ackMessage = "Decompression failed. Please resend the chunk.";
+                ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
+                                         (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+                if (ackSent == -1)
+                {
+                    logError("Error sending decompression error message to client.");
+                    break;
+                }
+
+                // Continue to the next iteration to wait for the client to resend the chunk
+                continue;
+            }else {
+                // Send error message back to client asking for re-compression or resending the chunk
+                const char *ackMessage = "1";
+                ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
+                                         (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+                if (ackSent == -1)
+                {
+                    logError("Error sending decompression success message to client.");
+                    break;
+                }
             }
 
+            // Écriture des données décompressées dans le fichier
             outFile.write(decompressedChunk.data(), decompressedChunk.size());
-        } else {
-            outFile.write(buffer, received);
+            totalBytesWritten += decompressedChunk.size();
+        }
+        else
+        {
+            // Écriture des données directement dans le fichier
+            outFile.write(metadataBuffer, bytesReceived);
+            totalBytesWritten += bytesReceived;
+        }
+
+        // Affichage de progression
+        if (verbose)
+        {
+            std::cout << "Progress: " << totalBytesWritten << " / " << fileSize << " bytes written.\n";
+        }
+
+        // Stop if we have received the full file size
+        if (totalBytesWritten >= fileSize)
+        {
+            break;
         }
     }
 
-    if (received < 0) {
-        logError("Error receiving data!");
+    std::cout << "\nFile reception completed.\n";
+
+    // Vérification finale et fermeture des ressources
+    if (bytesReceived == -1)
+    {
+        logError("Error receiving data from client.");
+    }
+    else if (verbose)
+    {
+        std::cout << "File received successfully! Total bytes written: " << totalBytesWritten << " bytes.\n";
     }
 
-    if (verbose) {
-        std::cout << "File received successfully! Total bytes: " << bytesReceived << std::endl;
-    }
-
-    outFile.close();
+    outFile.close(); // Fermeture explicite du fichier
 }
 
 // Function to create and bind the server socket
-int createServerSocket(int port, bool verbose) {
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket == -1) {
+int createServerSocket(int port, bool verbose)
+{
+    int serverSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (serverSocket == -1)
+    {
         logError("Error creating socket!");
         return -1;
     }
@@ -110,46 +235,26 @@ int createServerSocket(int port, bool verbose) {
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    // serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Adresse localhost
 
-    if (bind(serverSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == -1) {
+    if (bind(serverSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+    {
         logError("Error binding socket!");
         close(serverSocket);
         return -1;
     }
 
-    if (listen(serverSocket, 1) == -1) {
-        logError("Error listening on socket!");
-        close(serverSocket);
-        return -1;
-    }
-
-    if (verbose) {
+    if (verbose)
+    {
         std::cout << "Server listening on port " << port << "...\n";
     }
 
     return serverSocket;
 }
 
-// Function to accept the client connection
-int acceptClientConnection(int serverSocket, bool verbose) {
-    sockaddr_in clientAddr{};
-    socklen_t clientLen = sizeof(clientAddr);
-    int clientSocket = accept(serverSocket, (sockaddr *)&clientAddr, &clientLen);
-    if (clientSocket == -1) {
-        logError("Error accepting connection!");
-        close(serverSocket);
-        return -1;
-    }
-
-    if (verbose) {
-        std::cout << "Connection accepted from client.\n";
-    }
-
-    return clientSocket;
-}
-
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     int port = DEFAULT_PORT;
     std::string outputFileName = "received_file";
     bool decompressFlag = false;
@@ -164,8 +269,10 @@ int main(int argc, char *argv[]) {
         {nullptr, 0, nullptr, 0}};
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:f:cv", longOpts, nullptr)) != -1) {
-        switch (opt) {
+    while ((opt = getopt_long(argc, argv, "h:p:f:cv", longOpts, nullptr)) != -1)
+    {
+        switch (opt)
+        {
         case 'h':
             showUsage();
             return 0;
@@ -189,17 +296,13 @@ int main(int argc, char *argv[]) {
 
     // Create the server socket and bind it
     int serverSocket = createServerSocket(port, verbose);
-    if (serverSocket == -1) return 1;
+    if (serverSocket == -1)
+        return 1;
 
-    // Accept a client connection
-    int clientSocket = acceptClientConnection(serverSocket, verbose);
-    if (clientSocket == -1) return 1;
+    sockaddr_in serverAddr{};
+    saveReceivedFile(serverSocket, serverAddr, decompressFlag, verbose);
 
-    // Receive the file from the client and save it
-    saveReceivedFile(clientSocket, outputFileName.c_str(), decompressFlag, verbose);
-
-    // Close the sockets
-    close(clientSocket);
+    // Close the socket
     close(serverSocket);
 
     return 0;

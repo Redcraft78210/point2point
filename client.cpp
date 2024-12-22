@@ -5,13 +5,14 @@
 #include <unistd.h>
 #include <string.h>
 #include <getopt.h>
-#include <vector> // Ajout de l'en-tête nécessaire pour std::vector
-#include <zlib.h> // Pour la compression
-#include <chrono> // Pour mesurer le temps d'envoi
+#include <vector>
+#include <zlib.h>
+#include <chrono>
 
 #define DEFAULT_PORT 12345
 #define DEFAULT_SERVER "127.0.0.1"
-#define CHUNK_SIZE 1024
+#define CHUNK_SIZE 4096
+#define ACK_BUFFER_SIZE 1024
 
 template <typename T>
 T my_min(T a, T b)
@@ -36,9 +37,12 @@ void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
     double transferRate = (bytesSent / 1024.0) / elapsedTime; // Ko/s
 
     std::cout << "\rProgress: [";
-    for (int i = 0; i < 50; i++) {
-        if (i < progress / 2) std::cout << "#";
-        else std::cout << " ";
+    for (int i = 0; i < 50; i++)
+    {
+        if (i < progress / 2)
+            std::cout << "#";
+        else
+            std::cout << " ";
     }
     std::cout << "] " << progress << "%  Rate: " << transferRate << " KB/s";
     std::flush(std::cout);
@@ -50,14 +54,41 @@ bool fileExists(const std::string &fileName)
     return file.is_open();
 }
 
-void sendFileMetadata(int sockfd, const std::string &fileName, size_t fileSize)
+void sendFileMetadata(int sockfd, const std::string &fileName, size_t fileSize, sockaddr_in &serverAddr)
 {
-    std::string metadata = fileName + "\0" + std::to_string(fileSize);
-    if (send(sockfd, metadata.c_str(), metadata.size(), 0) == -1)
+    // Convertir la taille du fichier en chaîne
+    std::string fileSizeStr = std::to_string(fileSize);
+
+    // Calcul de la taille totale des métadonnées : nom du fichier + '\0' + taille du fichier
+    size_t metadataSize = fileName.size() + 1 + fileSizeStr.size(); // +1 pour '\0'
+
+    // Vérifier si la taille est raisonnable pour éviter les débordements
+    if (metadataSize > 1024)
+    { // Par exemple, limiter la taille à 1024 octets
+        std::cerr << "Metadata size is too large!" << std::endl;
+        return; // Eviter de poursuivre l'exécution si la taille est trop grande
+    }
+
+    // Allocation de mémoire pour les métadonnées
+    char *metadata = new char[metadataSize];
+
+    // Copier le nom du fichier et la taille dans le buffer
+    memcpy(metadata, fileName.c_str(), fileName.size());
+    metadata[fileName.size()] = '\0'; // Ajouter explicitement le terminator null
+    memcpy(metadata + fileName.size() + 1, fileSizeStr.c_str(), fileSizeStr.size());
+
+    // Envoyer les métadonnées
+    ssize_t sentBytes = sendto(sockfd, metadata, metadataSize, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr));
+    if (sentBytes == -1)
     {
         std::cerr << "Error sending file metadata!" << std::endl;
-        exit(1);
+        delete[] metadata;
+        return; // Retour au lieu de exit(1) pour permettre une gestion plus souple des erreurs
     }
+
+    std::cout << "File metadata sent successfully." << std::endl;
+
+    delete[] metadata; // Libérer la mémoire allouée
 }
 
 void logError(const std::string &message)
@@ -65,15 +96,15 @@ void logError(const std::string &message)
     std::cerr << "Error: " << message << std::endl;
 }
 
-void setupClient(int &clientSocket, sockaddr_in &serverAddr, const std::string &serverIP, int port, bool verbose)
+void setupClient(int &serverSocket, sockaddr_in &serverAddr, const std::string &serverIP, int port, bool verbose)
 {
     if (verbose)
     {
         std::cout << "Creating socket...\n";
     }
 
-    clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (clientSocket == -1)
+    serverSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (serverSocket == -1)
     {
         logError("Error creating socket!");
         exit(1);
@@ -89,23 +120,33 @@ void setupClient(int &clientSocket, sockaddr_in &serverAddr, const std::string &
     }
 }
 
-bool compressChunk(const std::vector<char> &input, std::vector<char> &output, bool verbose)
+bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char> &output, bool &fallbackToUncompressed, bool verbose)
 {
     uLongf compressedSize = compressBound(input.size());
     output.resize(compressedSize);
 
     int result = compress2(reinterpret_cast<Bytef *>(output.data()), &compressedSize,
-                          reinterpret_cast<const Bytef *>(input.data()), input.size(), Z_BEST_COMPRESSION);
+                           reinterpret_cast<const Bytef *>(input.data()), input.size(), Z_BEST_COMPRESSION);
     if (result != Z_OK)
     {
-        logError("Compression failed for chunk!");
+        fallbackToUncompressed = true; // Indique un échec de compression
+        if (verbose)
+        {
+            std::cerr << "Compression failed, fallback to uncompressed.\n";
+        }
         return false;
     }
+
     output.resize(compressedSize);
 
-    if (verbose)
+    if (compressedSize > CHUNK_SIZE) // Vérifie si la taille compressée dépasse la limite
     {
-        std::cout << "Chunk compressed, size after compression: " << compressedSize << " bytes.\n";
+        fallbackToUncompressed = true; // Indique que le chunk compressé est trop gros
+        if (verbose)
+        {
+            std::cerr << "Compressed chunk exceeds size limit, fallback to uncompressed.\n";
+        }
+        return false;
     }
 
     return true;
@@ -126,15 +167,15 @@ void closeSocket(int sockfd)
     }
 }
 
-void sendFile(int sockfd, const char *fileName, bool compressFlag, bool verbose)
+void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose, sockaddr_in &serverAddr)
 {
-    if (!fileExists(fileName))
+    if (!fileExists(filePath))
     {
         logError("File does not exist!");
         return;
     }
 
-    std::ifstream file(fileName, std::ios::binary);
+    std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open())
     {
         logError("Error opening file!");
@@ -142,84 +183,109 @@ void sendFile(int sockfd, const char *fileName, bool compressFlag, bool verbose)
     }
 
     size_t bytesSent = 0;
+    size_t compressedBytesSent = 0;
     file.seekg(0, std::ios::end);
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
-    
+
     char buffer[CHUNK_SIZE];
     std::vector<char> compressedChunk;
+    bool fallbackToUncompressed = false;
     auto startTime = std::chrono::steady_clock::now();
 
     if (verbose)
     {
         std::cout << "File size: " << fileSize << " bytes. Sending file...\n";
     }
+    std::string fileName = std::string(filePath).substr(std::string(filePath).find_last_of("/\\") + 1);
 
     // Send file metadata
-    sendFileMetadata(sockfd, fileName, fileSize);
+    sendFileMetadata(sockfd, fileName, fileSize, serverAddr);
 
-    // Envoyer le fichier par morceaux
+    // Wait for acknowledgment before starting transfer
+    char ackBuffer[ACK_BUFFER_SIZE];
+    sockaddr_in ackAddr;
+    socklen_t ackLen = sizeof(ackAddr);
+
     while (bytesSent < fileSize)
     {
         size_t bytesToRead = my_min(static_cast<size_t>(CHUNK_SIZE), fileSize - bytesSent);
         size_t readBytes = readFileChunk(file, buffer, bytesToRead);
-        
+
         if (compressFlag)
         {
-            // Compresser le chunk
-            if (!compressChunk(std::vector<char>(buffer, buffer + readBytes), compressedChunk, verbose))
+            if (!compressChunkWithFallback(std::vector<char>(buffer, buffer + readBytes), compressedChunk, fallbackToUncompressed, verbose))
             {
-                logError("Failed to compress chunk!");
-                return;
+                // If compression fails, send uncompressed data
+                if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+                {
+                    logError("Error sending uncompressed data after compression failed!");
+                    return;
+                }
+                fallbackToUncompressed = false;
             }
-
-            // Envoyer le chunk compressé
-            if (send(sockfd, compressedChunk.data(), compressedChunk.size(), 0) == -1)
+            else
             {
-                logError("Error sending compressed data!");
-                return;
-            }
+                // Send compressed data
+                if (sendto(sockfd, compressedChunk.data(), compressedChunk.size(), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+                {
+                    logError("Error sending compressed data!");
+                    return;
+                }
 
-            bytesSent += readBytes;
+                compressedBytesSent += compressedChunk.size();
+            }
         }
         else
         {
-            // Envoyer le chunk sans compression
-            if (send(sockfd, buffer, readBytes, 0) == -1)
+            if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
             {
                 logError("Error sending uncompressed data!");
                 return;
             }
-
-            bytesSent += readBytes;
         }
 
-        // Calcul de la durée écoulée pour calculer le taux de transfert
+        // Wait for acknowledgment (server response)
+        ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
+        if (ackReceived == -1)
+        {
+            logError("Error receiving acknowledgment!");
+            return;
+        }
+
+        // If decompression failed on the server, we need to resend the data
+        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please re-compress and resend.")
+        {
+            std::cerr << "\nDecompression failed on server. Retrying...\n";
+            bytesSent -= readBytes; // Rewind the sent bytes for retry
+        }
+
+        bytesSent += readBytes;
         auto elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
 
-        // Afficher la barre de progression et le taux
-        showProgress(bytesSent, fileSize, elapsedTime);
+        // Display progress
+        size_t totalBytesSent = compressFlag ? compressedBytesSent : bytesSent;
+        showProgress(totalBytesSent, fileSize, elapsedTime);
     }
 
-    std::cout << std::endl; // Nouvelle ligne après la barre de progression
-
+    std::cout << std::endl;
     if (verbose)
     {
         std::cout << "File sent successfully!\n";
     }
 
-    file.close(); // Explicitly close the file
+    file.close();
 }
 
 int main(int argc, char *argv[])
 {
     std::string serverIP = DEFAULT_SERVER;
     int port = DEFAULT_PORT;
-    std::string fileName;
+    std::string filePath;
     bool compressFlag = false;
     bool verbose = false;
 
-    // Parsing des options en ligne de commande
+    // Parse command-line options
     struct option longOpts[] = {
         {"help", no_argument, nullptr, 'h'},
         {"file", required_argument, nullptr, 'f'},
@@ -238,7 +304,7 @@ int main(int argc, char *argv[])
             showUsage();
             return 0;
         case 'f':
-            fileName = optarg;
+            filePath = optarg;
             break;
         case 'p':
             port = std::stoi(optarg);
@@ -258,31 +324,19 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (fileName.empty())
+    if (filePath.empty())
     {
         logError("No file specified!");
         return 1;
     }
 
-    int clientSocket;
+    int serverSocket;
     sockaddr_in serverAddr;
-    setupClient(clientSocket, serverAddr, serverIP, port, verbose);
+    setupClient(serverSocket, serverAddr, serverIP, port, verbose);
 
-    // Connexion au serveur
-    if (connect(clientSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-    {
-        logError("Connection failed!");
-        return 1;
-    }
+    // Send the file
+    sendFile(serverSocket, filePath.c_str(), compressFlag, verbose, serverAddr);
 
-    if (verbose)
-    {
-        std::cout << "Connected to server " << serverIP << ":" << port << "!\n";
-    }
-
-    // Envoi du fichier
-    sendFile(clientSocket, fileName.c_str(), compressFlag, verbose);
-
-    closeSocket(clientSocket);  // Ensure socket is closed after use
+    closeSocket(serverSocket); // Ensure socket is closed after use
     return 0;
 }
