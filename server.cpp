@@ -91,7 +91,6 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
     return true;
 }
 
-// Function to receive and save the file with enhanced ACK handling
 void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompressFlag, bool verbose)
 {
     char metadataBuffer[256];
@@ -109,7 +108,6 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         }
         else
         {
-            // Log the error message and errno description
             logError("Failed to receive metadata! Error: " + std::string(strerror(errno)));
         }
         return;
@@ -149,8 +147,6 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     }
 
     size_t totalBytesWritten = 0; // Variable pour suivre la progression
-    ssize_t bytesReceived = 0;
-    std::vector<char> decompressedChunk;
     ssize_t paquet_index = 0;
     // Boucle pour recevoir les données
     while (totalBytesWritten < fileSize)
@@ -198,6 +194,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         if (decompressFlag)
         {
             // Décompression des données reçues
+            std::vector<char> decompressedChunk;
             bool decompressionSuccess = decompressChunk(
                 chunkBuffer,
                 decompressedChunk,
@@ -220,12 +217,16 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
                     break;
                 }
 
-                // Continue to the next iteration to wait for the client to resend the chunk
+                // Skip processing this chunk and wait for a new chunk to be sent
                 continue;
             }
             else
             {
-                // Send ACK message with the paquet index
+                // Write decompressed data to file
+                outFile.write(decompressedChunk.data(), decompressedChunk.size());
+                totalBytesWritten += decompressedChunk.size();
+
+                // Send ACK message with the packet index
                 paquet_index++;
                 std::string ackMessage = "ACK " + std::to_string(paquet_index);
                 ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
@@ -236,18 +237,14 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
                     break;
                 }
             }
-
-            // Écriture des données décompressées dans le fichier
-            outFile.write(decompressedChunk.data(), decompressedChunk.size());
-            totalBytesWritten += decompressedChunk.size();
         }
         else
         {
-            // Écriture des données directement dans le fichier
+            // Writing received data directly to the file
             outFile.write(chunkBuffer.data(), bytesReceived);
             totalBytesWritten += bytesReceived;
 
-            // Send ACK message with the paquet index
+            // Send ACK message with the packet index
             paquet_index++;
             std::string ackMessage = "ACK " + std::to_string(paquet_index);
             ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
@@ -274,12 +271,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
     std::cout << "\nFile reception completed.\n";
 
-    // Vérification finale et fermeture des ressources
-    if (bytesReceived == -1)
-    {
-        logError("Error receiving data from client.");
-    }
-    else if (verbose)
+    if (verbose)
     {
         std::cout << "File received successfully! Total bytes written: " << totalBytesWritten << " bytes.\n";
     }
