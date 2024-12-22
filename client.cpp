@@ -8,10 +8,10 @@
 #include <vector>
 #include <zlib.h>
 #include <chrono>
+#include <iomanip>
 
 #define DEFAULT_PORT 12345
 #define DEFAULT_SERVER "127.0.0.1"
-#define CHUNK_SIZE 50000
 #define ACK_BUFFER_SIZE 1024
 
 template <typename T>
@@ -36,6 +36,18 @@ void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
     int progress = static_cast<int>((bytesSent * 100) / totalBytes);
     double transferRate = (bytesSent / 1024.0) / elapsedTime; // Ko/s
 
+    // Convertir le taux de transfert en fonction de sa taille
+    std::string rateUnit = "KB/s";
+    if (transferRate >= 1024) {
+        transferRate /= 1024; // Convertir en Mo/s
+        rateUnit = "MB/s";
+    }
+    if (transferRate >= 1024) {
+        transferRate /= 1024; // Convertir en Go/s
+        rateUnit = "GB/s";
+    }
+
+    // Affichage du progrès et du taux de transfert
     std::cout << "\rProgress: [";
     for (int i = 0; i < 50; i++)
     {
@@ -44,7 +56,10 @@ void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
         else
             std::cout << " ";
     }
-    std::cout << "] " << progress << "%  Rate: " << transferRate << " KB/s";
+    std::cout << "] " << progress << "%  Rate: " 
+              << std::fixed << std::setprecision(2) // Limite à 2 décimales
+              << transferRate << " " << rateUnit;
+
     std::flush(std::cout);
 }
 
@@ -120,7 +135,7 @@ void setupClient(int &serverSocket, sockaddr_in &serverAddr, const std::string &
     }
 }
 
-bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char> &output, bool &fallbackToUncompressed, bool verbose)
+bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char> &output, bool &fallbackToUncompressed, bool verbose, size_t chunkSize)
 {
     uLongf compressedSize = compressBound(input.size());
     output.resize(compressedSize);
@@ -139,7 +154,7 @@ bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char>
 
     output.resize(compressedSize);
 
-    if (compressedSize > CHUNK_SIZE) // Vérifie si la taille compressée dépasse la limite
+    if (compressedSize > chunkSize) // Vérifie si la taille compressée dépasse la limite
     {
         fallbackToUncompressed = true; // Indique que le chunk compressé est trop gros
         if (verbose)
@@ -167,6 +182,14 @@ void closeSocket(int sockfd)
     }
 }
 
+size_t calculateDynamicBufferSize(double transferRate)
+{
+    // For example, use transfer rate (in KB/s) to adjust buffer size
+    size_t dynamicChunkSize = static_cast<size_t>(transferRate * 1024);      // Buffer size based on transfer rate in bytes
+    dynamicChunkSize = my_min(dynamicChunkSize, static_cast<size_t>(50000)); // Cast 50000 to size_t
+    return dynamicChunkSize > 0 ? dynamicChunkSize : 1024;
+}
+
 void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose, sockaddr_in &serverAddr)
 {
     if (!fileExists(filePath))
@@ -187,9 +210,13 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    char buffer[CHUNK_SIZE];
+    // Dynamically allocate the buffer based on chunkSize
+    size_t chunkSize = calculateDynamicBufferSize(0); // Par défaut, on passe 0 pour l'instant pour déterminer chunkSize
+    char *buffer = new char[chunkSize];               // Allouer un buffer de taille dynamique selon chunkSize
+
     std::vector<char> compressedChunk;
     bool fallbackToUncompressed = false;
+
     auto startTime = std::chrono::steady_clock::now();
 
     if (verbose)
@@ -208,14 +235,29 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
 
     while (bytesSent < fileSize)
     {
-        size_t bytesToRead = my_min(static_cast<size_t>(CHUNK_SIZE), fileSize - bytesSent);
+
+        double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+        double transferRate = (bytesSent / 1024.0) / elapsedTime;
+
+        // Dynamically adjust the buffer size based on the current transfer rate
+        size_t chunkSize = calculateDynamicBufferSize(transferRate);
+        size_t bytesToRead = my_min(static_cast<size_t>(chunkSize), fileSize - bytesSent);
+        delete[] buffer;              // Libérer l'ancienne allocation
+        buffer = new char[chunkSize]; // Réallouer le buffer avec la nouvelle taille
         size_t readBytes = readFileChunk(file, buffer, bytesToRead);
 
         if (compressFlag)
         {
-            if (!compressChunkWithFallback(std::vector<char>(buffer, buffer + readBytes), compressedChunk, fallbackToUncompressed, verbose))
+            if (!compressChunkWithFallback(std::vector<char>(buffer, buffer + readBytes), compressedChunk, fallbackToUncompressed, verbose, chunkSize))
             {
                 // If compression fails, send uncompressed data
+                ssize_t dataSize = readBytes;
+                if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+                {
+                    logError("Error sending uncompressed data size!");
+                    return;
+                }
+
                 if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending uncompressed data after compression failed!");
@@ -226,6 +268,13 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
             else
             {
                 // Send compressed data
+                ssize_t dataSize = compressedChunk.size();
+                if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+                {
+                    logError("Error sending compressed data size!");
+                    return;
+                }
+
                 if (sendto(sockfd, compressedChunk.data(), compressedChunk.size(), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending compressed data!");
@@ -235,6 +284,14 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         }
         else
         {
+            // Send uncompressed data
+            ssize_t dataSize = readBytes;
+            if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+            {
+                logError("Error sending uncompressed data size!");
+                return;
+            }
+
             if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
             {
                 logError("Error sending uncompressed data!");
@@ -258,7 +315,6 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         }
 
         bytesSent += readBytes;
-        auto elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
 
         // Display progress
         size_t totalBytesSent = bytesSent;

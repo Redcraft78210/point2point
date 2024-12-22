@@ -43,6 +43,15 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
 
     while (true)
     {
+        const uLongf MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
+        if (outputSize > MAX_BUFFER_SIZE)
+        {
+            if (verbose)
+            {
+                std::cerr << "Decompression buffer size exceeded maximum limit.\n";
+            }
+            return false;
+        }
         result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
                             reinterpret_cast<const Bytef *>(input.data()), input.size());
 
@@ -59,8 +68,11 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
         }
         else
         {
-            // Decompression error
-            std::cerr << "Decompression error: " << result << "\n";
+            if (verbose)
+            {
+                // Decompression error
+                std::cerr << "Decompression error: " << result << "\n";
+            }
             return false;
         }
     }
@@ -141,9 +153,43 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     std::vector<char> decompressedChunk;
 
     // Boucle pour recevoir les données
-    while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
-                                     (struct sockaddr *)&clientAddr, &clientAddrLen)) > 0)
+    while (totalBytesWritten < fileSize)
     {
+
+        // Premièrement, recevoir la taille du buffer
+        ssize_t bufferSizeReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
+                                              (struct sockaddr *)&clientAddr, &clientAddrLen);
+
+        if (bufferSizeReceived == -1)
+        {
+            logError("Error receiving buffer size. Error: " + std::string(strerror(errno)));
+            break;
+        }
+
+        // Convertir la taille du buffer reçu en size_t
+        ssize_t bufferSize;
+        memcpy(&bufferSize, metadataBuffer, sizeof(ssize_t));
+
+        if (bufferSize <= 0)
+        {
+            logError("Invalid buffer size received: " + std::to_string(bufferSize));
+            break;
+        }
+
+        const ssize_t MAX_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB cap
+        if (bufferSize > MAX_CHUNK_SIZE || bufferSize <= 0)
+        {
+            logError("Received invalid or excessively large buffer size: " + std::to_string(bufferSize));
+            break;
+        }
+
+        // Allocating buffer to receive the chunk of data of this size
+        std::vector<char> chunkBuffer(bufferSize);
+
+        // Recevoir les données du client
+        ssize_t bytesReceived = recvfrom(serverSocket, chunkBuffer.data(), bufferSize, 0,
+                                         (struct sockaddr *)&clientAddr, &clientAddrLen);
+
         if (bytesReceived == -1)
         {
             logError("Error receiving data from client. Error: " + std::string(strerror(errno)));
@@ -153,11 +199,17 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         if (decompressFlag)
         {
             // Décompression des données reçues
-            bool decompressionSuccess = decompressChunk(std::vector<char>(metadataBuffer, metadataBuffer + bytesReceived), decompressedChunk, verbose);
+            bool decompressionSuccess = decompressChunk(
+                chunkBuffer,
+                decompressedChunk,
+                verbose);
 
             if (!decompressionSuccess)
             {
-                std::cerr << "Decompression error. Waiting for the client to resend the chunk.\n";
+                if (verbose)
+                {
+                    std::cerr << "Decompression error. Waiting for the client to resend the chunk.\n";
+                }
 
                 // Send error message back to client asking for re-compression or resending the chunk
                 const char *ackMessage = "Decompression failed. Please resend the chunk.";
@@ -192,7 +244,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         else
         {
             // Écriture des données directement dans le fichier
-            outFile.write(metadataBuffer, bytesReceived);
+            outFile.write(chunkBuffer.data(), bytesReceived);
             totalBytesWritten += bytesReceived;
 
             // Send error message back to client asking for re-compression or resending the chunk
