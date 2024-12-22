@@ -281,6 +281,38 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
                     return;
                 }
 
+                // Wait for acknowledgment (server response)
+                ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
+                if (ackReceived == -1)
+                {
+                    logError("Error receiving acknowledgment!");
+                    delete[] buffer; // Free buffer on error
+                    return;
+                }
+
+                // Convert the received acknowledgment to a string only once
+                std::string ackMessage(ackBuffer, ackReceived);
+
+                // Parse the acknowledgment message to check the packet index
+                long ackPacketIndex = -1;
+                try
+                {
+                    ackPacketIndex = std::stol(ackMessage); // Convert the acknowledgment message to long
+                }
+                catch (const std::invalid_argument &e)
+                {
+                    std::cerr << "\nInvalid acknowledgment received. Retrying...\n";
+                    continue;
+                }
+
+                // Check if the acknowledgment matches the expected packet index
+                if (ackPacketIndex != paquet_index)
+                {
+                    system("clear"); // Linux/macOS clear screen command
+                    std::cerr << "\rReception failed on server. Retrying...\r";
+                    continue;
+                }
+
                 if (sendto(sockfd, compressedChunk.data(), compressedChunk.size(), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending compressed data!");
@@ -323,7 +355,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         // If decompression failed on the server, we need to resend the data
         if (ackMessage == "Decompression failed. Please resend the chunk.")
         {
-            std::cerr << "\r" << std::string(500, ' ') << "\r"; // Clear previous line
+            system("clear");
             std::cerr << "\nDecompression failed on server. Retrying...\n";
             continue;
         }
@@ -343,7 +375,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         // Check if the acknowledgment matches the expected packet index
         if (ackPacketIndex != paquet_index + 1)
         {
-            std::cerr << "\r" << std::string(500, ' ') << "\r"; // Clear the previous line
+            system("clear"); // Linux/macOS clear screen command
             std::cerr << "\rReception failed on server. Retrying...\r";
             continue;
         }
@@ -351,8 +383,8 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         // If the acknowledgment matches the expected packet index, proceed
         if (ackPacketIndex == paquet_index + 1)
         {
-            std::cerr << "\r" << std::string(500, ' ') << "\r"; // Clear the previous line
-            paquet_index++;                                     // Increment the packet index to the next expected one
+            system("clear"); // Linux/macOS clear screen command
+            paquet_index++;  // Increment the packet index to the next expected one
         }
         else
         {

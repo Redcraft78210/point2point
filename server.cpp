@@ -171,6 +171,16 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             break;
         }
 
+        // Send ACK message with the packet index
+        std::string ackMessage = std::to_string(paquet_index);
+        ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
+                                 (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+        if (ackSent == -1)
+        {
+            logError("Error sending ACK message to client.");
+            break;
+        }
+
         const ssize_t MAX_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB cap
         if (bufferSize > MAX_CHUNK_SIZE || bufferSize <= 0)
         {
