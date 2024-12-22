@@ -51,7 +51,7 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
         }
 
         int result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
-                            reinterpret_cast<const Bytef *>(input.data()), input.size());
+                                reinterpret_cast<const Bytef *>(input.data()), input.size());
 
         if (result == Z_OK)
         {
@@ -151,7 +151,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     size_t totalBytesWritten = 0; // Variable pour suivre la progression
     ssize_t bytesReceived = 0;
     std::vector<char> decompressedChunk;
-
+    ssize_t paquet_index = 0;
     // Boucle pour recevoir les données
     while (totalBytesWritten < fileSize)
     {
@@ -226,8 +226,9 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             }
             else
             {
-                // Send error message back to client asking for re-compression or resending the chunk
-                const char *ackMessage = "1";
+                // Send index paquet as a sucess paquet reception
+                paquet_index++;
+                const char *ackMessage = std::to_string(paquet_index).c_str();
                 ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
                                          (struct sockaddr *)&clientAddr, sizeof(clientAddr));
                 if (ackSent == -1)
@@ -247,8 +248,9 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             outFile.write(chunkBuffer.data(), bytesReceived);
             totalBytesWritten += bytesReceived;
 
-            // Send error message back to client asking for re-compression or resending the chunk
-            const char *ackMessage = "1";
+            // Send index paquet as a sucess paquet reception
+            paquet_index++;
+            const char *ackMessage = std::to_string(paquet_index).c_str();
             ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
                                      (struct sockaddr *)&clientAddr, sizeof(clientAddr));
             if (ackSent == -1)
@@ -301,7 +303,7 @@ int createServerSocket(int port, bool verbose)
     serverAddr.sin_port = htons(port);
     // serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // Adresse localhost
-    
+
     if (bind(serverSocket, reinterpret_cast<sockaddr *>(&serverAddr), sizeof(serverAddr)) == -1)
     {
         logError("Error binding socket!");

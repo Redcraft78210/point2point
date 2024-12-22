@@ -38,11 +38,13 @@ void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
 
     // Convertir le taux de transfert en fonction de sa taille
     std::string rateUnit = "KB/s";
-    if (transferRate >= 1024) {
+    if (transferRate >= 1024)
+    {
         transferRate /= 1024; // Convertir en Mo/s
         rateUnit = "MB/s";
     }
-    if (transferRate >= 1024) {
+    if (transferRate >= 1024)
+    {
         transferRate /= 1024; // Convertir en Go/s
         rateUnit = "GB/s";
     }
@@ -56,7 +58,7 @@ void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
         else
             std::cout << " ";
     }
-    std::cout << "] " << progress << "%  Rate: " 
+    std::cout << "] " << progress << "%  Rate: "
               << std::fixed << std::setprecision(2) // Limite à 2 décimales
               << transferRate << " " << rateUnit;
 
@@ -100,7 +102,7 @@ void sendFileMetadata(int sockfd, const std::string &fileName, size_t fileSize, 
     }
     else
     {
-    std::cout << "File metadata sent successfully." << std::endl;
+        std::cout << "File metadata sent successfully." << std::endl;
     }
 
     delete[] metadata;
@@ -233,6 +235,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     sockaddr_in ackAddr;
     socklen_t ackLen = sizeof(ackAddr);
 
+    ssize_t paquet_index = 0;
     while (bytesSent < fileSize)
     {
 
@@ -320,9 +323,23 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
             std::cerr << "\nDecompression failed on server. Retrying...\n";
             bytesSent -= readBytes; // Rewind the sent bytes for retry
         }
+        else if (std::stol(std::string(ackBuffer, ackReceived)) != paquet_index + 1)
+        {
+            std::cout << std::string(ackBuffer, ackReceived);
+            std::cerr << "\nReception failed on server. Retrying...\n";
+            bytesSent -= readBytes; // Rewind the sent bytes for retry
+        }
+        else if (std::stol(std::string(ackBuffer, ackReceived)) == paquet_index + 1)
+        {
+            paquet_index++;
+        }
+        else
+        {
+            std::cerr << "\nSomething failed somewhere. Retrying...\n";
+            bytesSent -= readBytes; // Rewind the sent bytes for retry
+        }
 
         bytesSent += readBytes;
-
         // Display progress
         size_t totalBytesSent = bytesSent;
         showProgress(totalBytesSent, fileSize, elapsedTime);
