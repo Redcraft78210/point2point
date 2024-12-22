@@ -97,13 +97,13 @@ void sendFileMetadata(int sockfd, const std::string &fileName, size_t fileSize, 
     if (sentBytes == -1)
     {
         std::cerr << "Error sending file metadata!" << std::endl;
-        delete[] metadata;
-        return; // Retour au lieu de exit(1) pour permettre une gestion plus souple des erreurs
+    }
+    else
+    {
+    std::cout << "File metadata sent successfully." << std::endl;
     }
 
-    std::cout << "File metadata sent successfully." << std::endl;
-
-    delete[] metadata; // Libérer la mémoire allouée
+    delete[] metadata;
 }
 
 void logError(const std::string &message)
@@ -255,12 +255,14 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
                 if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending uncompressed data size!");
+                    delete[] buffer;
                     return;
                 }
 
                 if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending uncompressed data after compression failed!");
+                    delete[] buffer;
                     return;
                 }
                 fallbackToUncompressed = false;
@@ -272,12 +274,14 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
                 if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending compressed data size!");
+                    delete[] buffer;
                     return;
                 }
 
                 if (sendto(sockfd, compressedChunk.data(), compressedChunk.size(), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
                 {
                     logError("Error sending compressed data!");
+                    delete[] buffer;
                     return;
                 }
             }
@@ -289,12 +293,14 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
             if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
             {
                 logError("Error sending uncompressed data size!");
+                delete[] buffer;
                 return;
             }
 
             if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
             {
                 logError("Error sending uncompressed data!");
+                delete[] buffer;
                 return;
             }
         }
@@ -304,6 +310,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         if (ackReceived == -1)
         {
             logError("Error receiving acknowledgment!");
+            delete[] buffer;
             return;
         }
 
@@ -328,6 +335,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     }
 
     file.close();
+    delete[] buffer;
 }
 
 int main(int argc, char *argv[])

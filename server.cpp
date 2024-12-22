@@ -11,8 +11,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cassert>
-#include <cerrno>  // For errno
-#include <cstring> // For strerror()
+#include <cerrno>
+#include <cstring>
 
 #define DEFAULT_PORT 12345
 #define CHUNK_SIZE 4096
@@ -22,24 +22,21 @@ void showUsage()
 {
     std::cout << "Usage: file_receiver [options]\n";
     std::cout << "  -h, --help            Display help\n";
-    std::cout << "  -p, --port <port>      Port to listen on (default: 12345)\n";
-    std::cout << "  -f, --file <file>      Destination file\n";
-    std::cout << "  -c, --decompress       Enable decompression\n";
-    std::cout << "  -v, --verbose          Show detailed information\n";
+    std::cout << "  -p, --port <port>     Port to listen on (default: 12345)\n";
+    std::cout << "  -f, --file <file>     Destination file\n";
+    std::cout << "  -c, --decompress      Enable decompression\n";
+    std::cout << "  -v, --verbose         Show detailed information\n";
 }
 
-// Error logging function
 void logError(const std::string &message)
 {
     std::cerr << "Error: " << message << std::endl;
 }
 
-// Function to decompress a chunk of data
 bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, bool verbose)
 {
-    uLongf outputSize = input.size() * 2; // Initial guess for decompressed size
+    uLongf outputSize = input.size() * 2;
     std::vector<char> tempBuffer(outputSize);
-    int result;
 
     while (true)
     {
@@ -52,17 +49,22 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
             }
             return false;
         }
-        result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
+
+        int result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
                             reinterpret_cast<const Bytef *>(input.data()), input.size());
 
         if (result == Z_OK)
         {
-            // Decompression successful
-            break;
+            output.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
+            if (verbose)
+            {
+                std::cout << "Decompressed successfully. Original size: " << input.size()
+                          << ", Decompressed size: " << outputSize << " bytes.\n";
+            }
+            return true;
         }
         else if (result == Z_BUF_ERROR)
         {
-            // Buffer size insufficient, double the buffer size
             outputSize *= 2;
             tempBuffer.resize(outputSize);
         }
@@ -95,6 +97,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     char metadataBuffer[256];
     struct sockaddr_in clientAddr;
     socklen_t clientAddrLen = sizeof(clientAddr);
+
     ssize_t metadataReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
                                         (struct sockaddr *)&clientAddr, &clientAddrLen);
 
@@ -122,14 +125,11 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     }
 
     std::string fileName = metadata.substr(0, delimiterPos);
-
-    // Assurer que la taille du fichier est correctement extraite après le délimiteur
     std::string fileSizeStr = metadata.substr(delimiterPos + 1);
     size_t fileSize = 0;
 
     try
     {
-        // Convertir la chaîne en taille
         fileSize = std::stoull(fileSizeStr);
     }
     catch (const std::exception &e)
@@ -190,7 +190,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         ssize_t bytesReceived = recvfrom(serverSocket, chunkBuffer.data(), bufferSize, 0,
                                          (struct sockaddr *)&clientAddr, &clientAddrLen);
 
-        if (bytesReceived == -1)
+        if (bytesReceived <= 0)
         {
             logError("Error receiving data from client. Error: " + std::string(strerror(errno)));
             break;
@@ -301,8 +301,8 @@ int createServerSocket(int port, bool verbose)
     serverAddr.sin_port = htons(port);
     // serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // Adresse localhost
-
-    if (bind(serverSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+    
+    if (bind(serverSocket, reinterpret_cast<sockaddr *>(&serverAddr), sizeof(serverAddr)) == -1)
     {
         logError("Error binding socket!");
         close(serverSocket);
