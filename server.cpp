@@ -137,7 +137,10 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     std::string fileSizeStr = metadata.substr(delimiterPos + 1);
     size_t fileSize = std::stoull(fileSizeStr);
 
-    std::cout << "Receiving file: " << fileName << ", size: " << fileSize << " bytes\n";
+    if (verbose)
+    {
+        std::cout << "Receiving file: " << fileName << ", size: " << fileSize << " bytes\n";
+    }
 
     std::ofstream outFile(fileName, std::ios::binary);
     if (!outFile.is_open())
@@ -154,7 +157,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
     if (verbose)
     {
-        std::cout << "Receiving file...\n";
+        std::cout << "Starting to receive the file...\n";
     }
 
     while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, chunkSize, 0,
@@ -171,6 +174,12 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
         // Adjust buffer size based on bandwidth
         adjustBufferSize(bandwidth);
+
+        if (verbose)
+        {
+            std::cout << "Received chunk of " << bytesReceived << " bytes. Total received: " << totalBytesWritten << " bytes.\n";
+            std::cout << "Current bandwidth: " << bandwidth << " KB/s\n";
+        }
 
         if (decompressFlag)
         {
@@ -212,6 +221,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         if (verbose)
         {
             std::cout << "Progress: " << totalBytesWritten << " / " << fileSize << " bytes written.\n";
+            std::cout << "Current buffer size: " << CURRENT_CHUNK_SIZE << " bytes.\n";
         }
 
         if (totalBytesWritten >= fileSize)
@@ -221,7 +231,10 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     }
 
     outFile.close();
-    std::cout << "File reception completed.\n";
+    if (verbose)
+    {
+        std::cout << "File reception completed.\n";
+    }
 }
 
 // Function to create and bind the server socket

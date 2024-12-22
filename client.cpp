@@ -4,6 +4,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
+#include <memory> // For std::unique_ptr
+
 #include <getopt.h>
 #include <vector>
 #include <zlib.h>
@@ -185,34 +187,34 @@ void adjustBufferSize(size_t &currentChunkSize, double transferRate)
 
 void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose, sockaddr_in &serverAddr)
 {
-    if (!fileExists(filePath))
-    {
-        std::cerr << "Error: File does not exist!\n";
-        return;
-    }
-
+    // Check if file exists
     std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open())
+    if (!file)
     {
-        std::cerr << "Error: Unable to open file!\n";
+        std::cerr << "Error: File does not exist or cannot be opened!\n";
         return;
     }
 
-    size_t bytesSent = 0;
+    // File size calculation
     file.seekg(0, std::ios::end);
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
 
+    size_t bytesSent = 0;
     size_t currentChunkSize = MIN_CHUNK_SIZE;
-    char *buffer = new char[MAX_CHUNK_SIZE];
+
+    // Create buffer using unique_ptr for automatic memory management
+    std::unique_ptr<char[]> buffer(new char[MAX_CHUNK_SIZE]);
 
     if (verbose)
     {
         std::cout << "File size: " << fileSize << " bytes. Sending file...\n";
     }
+
+    // Extract file name from the file path
     std::string fileName = std::string(filePath).substr(std::string(filePath).find_last_of("/\\") + 1);
 
-    // Send file metadata
+    // Send file metadata (e.g., fileName and fileSize)
     sendFileMetadata(sockfd, fileName, fileSize, serverAddr);
 
     auto startTime = std::chrono::steady_clock::now();
@@ -221,16 +223,15 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     while (bytesSent < fileSize)
     {
         size_t bytesToRead = std::min(currentChunkSize, fileSize - bytesSent);
-        size_t readBytes = readFileChunk(file, buffer, bytesToRead);
+        size_t readBytes = readFileChunk(file, buffer.get(), bytesToRead);
 
         if (readBytes == 0)
             break; // End of file
 
         // Send the chunk
-        if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+        if (sendto(sockfd, buffer.get(), readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
         {
             std::cerr << "Error: Failed to send data!\n";
-            delete[] buffer;
             return;
         }
 
@@ -239,44 +240,43 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         sockaddr_in ackAddr;
         socklen_t ackLen = sizeof(ackAddr);
         ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
+
         if (ackReceived == -1)
         {
-            logError("Error receiving acknowledgment!");
+            std::cerr << "Error: Failed to receive acknowledgment. Error code: " << errno << "\n";
             return;
         }
 
-        // If decompression failed on the server, we need to resend the data
-        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please re-compress and resend.")
+        // Check for decompression failure
+        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please resend the chunk.")
         {
             std::cerr << "\nDecompression failed on server. Retrying...\n";
-            bytesSent -= readBytes; // Rewind the sent bytes for retry
         }
-
-        bytesSent += readBytes;
-
-        // Calculate elapsed time and adjust chunk size
-        auto currentTime = std::chrono::steady_clock::now();
-        double elapsedTime = std::chrono::duration<double>(currentTime - startTime).count();
-        if (std::chrono::duration<double>(currentTime - lastBandwidthUpdate).count() > BANDWIDTH_UPDATE_INTERVAL)
+        else
         {
-            double transferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
-            adjustBufferSize(currentChunkSize, transferRate);
-            lastBandwidthUpdate = currentTime;
+            bytesSent += readBytes;
 
-            if (verbose)
+            // Calculate elapsed time and adjust chunk size
+            auto currentTime = std::chrono::steady_clock::now();
+            double elapsedTime = std::chrono::duration<double>(currentTime - startTime).count();
+            if (std::chrono::duration<double>(currentTime - lastBandwidthUpdate).count() > BANDWIDTH_UPDATE_INTERVAL)
             {
-                std::cout << "\rBytes sent: " << bytesSent
-                          << "/" << fileSize
-                          << " (" << (100 * bytesSent / fileSize) << "%)"
-                          << ", Current chunk size: " << currentChunkSize
-                          << ", Transfer rate: " << transferRate << " KB/s"
-                          << std::flush;
+                double transferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
+                adjustBufferSize(currentChunkSize, transferRate);
+                lastBandwidthUpdate = currentTime;
+
+                if (verbose)
+                {
+                    std::cout << "\rBytes sent: " << bytesSent
+                              << "/" << fileSize
+                              << " (" << (100 * bytesSent / fileSize) << "%)"
+                              << ", Current chunk size: " << currentChunkSize
+                              << ", Transfer rate: " << transferRate << " KB/s"
+                              << std::flush;
+                }
             }
         }
     }
-
-    delete[] buffer;
-    file.close();
 
     if (verbose)
         std::cout << "\nFile transfer completed successfully.\n";
