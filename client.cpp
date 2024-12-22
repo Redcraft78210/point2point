@@ -66,39 +66,30 @@ bool fileExists(const std::string &fileName)
 
 void sendFileMetadata(int sockfd, const std::string &fileName, size_t fileSize, sockaddr_in &serverAddr)
 {
-    // Convertir la taille du fichier en chaîne
     std::string fileSizeStr = std::to_string(fileSize);
+    size_t metadataSize = fileName.size() + 1 + fileSizeStr.size();
 
-    // Calcul de la taille totale des métadonnées : nom du fichier + '\0' + taille du fichier
-    size_t metadataSize = fileName.size() + 1 + fileSizeStr.size(); // +1 pour '\0'
-
-    // Vérifier si la taille est raisonnable pour éviter les débordements
-    if (metadataSize > 1024)
-    { // Par exemple, limiter la taille à 1024 octets
+    if (metadataSize > 1024) // Metadata size limit check
+    {
         std::cerr << "Metadata size is too large!" << std::endl;
-        return; // Eviter de poursuivre l'exécution si la taille est trop grande
+        return;
     }
 
-    // Allocation de mémoire pour les métadonnées
     char *metadata = new char[metadataSize];
-
-    // Copier le nom du fichier et la taille dans le buffer
     memcpy(metadata, fileName.c_str(), fileName.size());
-    metadata[fileName.size()] = '\0'; // Ajouter explicitement le terminator null
+    metadata[fileName.size()] = '\0';
     memcpy(metadata + fileName.size() + 1, fileSizeStr.c_str(), fileSizeStr.size());
 
-    // Envoyer les métadonnées
     ssize_t sentBytes = sendto(sockfd, metadata, metadataSize, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr));
     if (sentBytes == -1)
     {
         std::cerr << "Error sending file metadata!" << std::endl;
         delete[] metadata;
-        return; // Retour au lieu de exit(1) pour permettre une gestion plus souple des erreurs
+        return;
     }
 
     std::cout << "File metadata sent successfully." << std::endl;
-
-    delete[] metadata; // Libérer la mémoire allouée
+    delete[] metadata;
 }
 
 void logError(const std::string &message)
@@ -139,7 +130,7 @@ bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char>
                            reinterpret_cast<const Bytef *>(input.data()), input.size(), Z_BEST_COMPRESSION);
     if (result != Z_OK)
     {
-        fallbackToUncompressed = true; // Indique un échec de compression
+        fallbackToUncompressed = true;
         if (verbose)
         {
             std::cerr << "Compression failed, fallback to uncompressed.\n";
@@ -149,9 +140,9 @@ bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char>
 
     output.resize(compressedSize);
 
-    if (compressedSize > CHUNK_SIZE) // Vérifie si la taille compressée dépasse la limite
+    if (compressedSize > CHUNK_SIZE)
     {
-        fallbackToUncompressed = true; // Indique que le chunk compressé est trop gros
+        fallbackToUncompressed = true;
         if (verbose)
         {
             std::cerr << "Compressed chunk exceeds size limit, fallback to uncompressed.\n";
@@ -179,13 +170,13 @@ void closeSocket(int sockfd)
 
 void adjustBufferSize(size_t &currentChunkSize, double transferRate)
 {
-    if (transferRate > 0) // Valid transfer rate
+    if (transferRate > 0)
     {
-        if (transferRate > 1000) // High bandwidth (KB/s)
+        if (transferRate > 1000)
         {
             currentChunkSize = std::min(currentChunkSize * 2, (size_t)MAX_CHUNK_SIZE);
         }
-        else if (transferRate < 200) // Low bandwidth (KB/s)
+        else if (transferRate < 200)
         {
             currentChunkSize = std::max(currentChunkSize / 2, (size_t)MIN_CHUNK_SIZE);
         }
@@ -213,8 +204,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     file.seekg(0, std::ios::beg);
 
     size_t currentChunkSize = MIN_CHUNK_SIZE;
-    char *buffer = new char[MAX_CHUNK_SIZE]; // Allocate maximum possible buffer size
-
+    char *buffer = new char[MAX_CHUNK_SIZE];
 
     if (verbose)
     {
@@ -236,11 +226,30 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         if (readBytes == 0)
             break; // End of file
 
+        // Send the chunk
         if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
         {
             std::cerr << "Error: Failed to send data!\n";
             delete[] buffer;
             return;
+        }
+
+        // Wait for acknowledgment (server response)
+        char ackBuffer[ACK_BUFFER_SIZE];
+        sockaddr_in ackAddr;
+        socklen_t ackLen = sizeof(ackAddr);
+        ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
+        if (ackReceived == -1)
+        {
+            logError("Error receiving acknowledgment!");
+            return;
+        }
+
+        // If decompression failed on the server, we need to resend the data
+        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please re-compress and resend.")
+        {
+            std::cerr << "\nDecompression failed on server. Retrying...\n";
+            bytesSent -= readBytes; // Rewind the sent bytes for retry
         }
 
         bytesSent += readBytes;

@@ -52,31 +52,26 @@ void logError(const std::string &message)
     std::cerr << "Error: " << message << std::endl;
 }
 
-// Fonction pour mesurer la bande passante
+// Function to measure bandwidth
 double calculateBandwidth(size_t bytesReceived, double elapsedTime)
 {
     return (bytesReceived / 1024.0) / elapsedTime; // Ko/s
 }
 
-// Fonction pour ajuster dynamiquement la taille du buffer en fonction de la bande passante
+// Function to adjust the buffer size based on the bandwidth
 void adjustBufferSize(double bandwidth)
 {
-    // Définir une taille de chunk par défaut
     size_t dynamicChunkSize = CURRENT_CHUNK_SIZE;
 
-    // Ajuster la taille du buffer en fonction de la bande passante
-    if (bandwidth > 1000) // Si la bande passante est supérieure à 1 Mo/s
+    if (bandwidth > 1000) // If bandwidth is greater than 1 MB/s
     {
-        // Augmenter la taille du buffer progressivement en fonction de la bande passante
         dynamicChunkSize = my_min(dynamicChunkSize * 2, static_cast<size_t>(MAX_CHUNK_SIZE)); // Double the buffer size
     }
-    else if (bandwidth < 100) // Si la bande passante est inférieure à 100 Ko/s
+    else if (bandwidth < 100) // If bandwidth is less than 100 KB/s
     {
-        // Réduire la taille du buffer progressivement en fonction de la bande passante
-        dynamicChunkSize = my_max(dynamicChunkSize / 2, static_cast<size_t>(MIN_CHUNK_SIZE)); // Reduce the buffer size
+        dynamicChunkSize = my_max(dynamicChunkSize / 2, static_cast<size_t>(MIN_CHUNK_SIZE)); // Halve the buffer size
     }
 
-    // Mettre à jour la taille du buffer actuelle
     CURRENT_CHUNK_SIZE = dynamicChunkSize;
 }
 
@@ -94,8 +89,7 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
 
         if (result == Z_OK)
         {
-            // Decompression successful
-            break;
+            break; // Decompression successful
         }
         else if (result == Z_BUF_ERROR)
         {
@@ -123,7 +117,7 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
     return true;
 }
 
-// Fonction de réception et de sauvegarde du fichier (ajustée)
+// Function to receive and save the file (adjusted)
 void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompressFlag, bool verbose)
 {
     char metadataBuffer[256];
@@ -145,7 +139,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         return;
     }
 
-    // Extraction du nom de fichier et de la taille (inchangé)
+    // Extract file name and size (unchanged)
     std::string metadata(metadataBuffer, metadataReceived);
     size_t delimiterPos = metadata.find('\0');
     if (delimiterPos == std::string::npos)
@@ -167,12 +161,11 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         return;
     }
 
-    // char buffer[CURRENT_CHUNK_SIZE];
     size_t totalBytesWritten = 0;
     ssize_t bytesReceived = 0;
     std::vector<char> decompressedChunk;
     auto startTime = std::chrono::steady_clock::now();
-    size_t chunkSize = CURRENT_CHUNK_SIZE; // Taille du buffer dynamique initiale
+    size_t chunkSize = CURRENT_CHUNK_SIZE;
 
     if (verbose)
     {
@@ -191,7 +184,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         auto elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double bandwidth = calculateBandwidth(totalBytesWritten, elapsedTime);
 
-        // Ajuster la taille du buffer en fonction de la bande passante
+        // Adjust buffer size based on bandwidth
         adjustBufferSize(bandwidth);
 
         if (decompressFlag)
