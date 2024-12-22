@@ -15,7 +15,7 @@
 #include <cstring> // For strerror()
 
 #define DEFAULT_PORT 12345
-#define CHUNK_SIZE 4096
+#define DEFAULT_CHUNK_SIZE 4096
 #define ACK_BUFFER_SIZE 256
 
 void showUsage()
@@ -32,6 +32,27 @@ void showUsage()
 void logError(const std::string &message)
 {
     std::cerr << "Error: " << message << std::endl;
+}
+
+// Fonction pour mesurer la bande passante
+double calculateBandwidth(size_t bytesReceived, double elapsedTime)
+{
+    return (bytesReceived / 1024.0) / elapsedTime; // Ko/s
+}
+
+// Fonction pour ajuster dynamiquement la taille du buffer en fonction de la bande passante
+size_t adjustBufferSize(double bandwidth)
+{
+    size_t dynamicChunkSize = DEFAULT_CHUNK_SIZE;
+    if (bandwidth > 1000) // Si la bande passante est supérieure à 1 Mo/s, augmentez le buffer
+    {
+        dynamicChunkSize = 8192; // Augmentez la taille du buffer (par exemple à 8 Ko)
+    }
+    else if (bandwidth < 100) // Si la bande passante est inférieure à 100 Ko/s, réduisez le buffer
+    {
+        dynamicChunkSize = 1024; // Réduisez la taille du buffer (par exemple à 1 Ko)
+    }
+    return dynamicChunkSize;
 }
 
 // Function to decompress a chunk of data
@@ -77,7 +98,7 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
     return true;
 }
 
-// Function to receive and save the file
+// Fonction de réception et de sauvegarde du fichier (ajustée)
 void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompressFlag, bool verbose)
 {
     char metadataBuffer[256];
@@ -94,15 +115,14 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         }
         else
         {
-            // Log the error message and errno description
             logError("Failed to receive metadata! Error: " + std::string(strerror(errno)));
         }
         return;
     }
 
-    // Vérification du format de la donnée reçue
+    // Extraction du nom de fichier et de la taille (inchangé)
     std::string metadata(metadataBuffer, metadataReceived);
-    size_t delimiterPos = metadata.find('\0'); // Cherche le séparateur '\0'
+    size_t delimiterPos = metadata.find('\0');
     if (delimiterPos == std::string::npos)
     {
         logError("Invalid metadata format received! No delimiter found.");
@@ -110,25 +130,11 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     }
 
     std::string fileName = metadata.substr(0, delimiterPos);
-
-    // Assurer que la taille du fichier est correctement extraite après le délimiteur
     std::string fileSizeStr = metadata.substr(delimiterPos + 1);
-    size_t fileSize = 0;
-
-    try
-    {
-        // Convertir la chaîne en taille
-        fileSize = std::stoull(fileSizeStr);
-    }
-    catch (const std::exception &e)
-    {
-        logError("Failed to parse file size from metadata! Error: " + std::string(e.what()));
-        return;
-    }
+    size_t fileSize = std::stoull(fileSizeStr);
 
     std::cout << "Receiving file: " << fileName << ", size: " << fileSize << " bytes\n";
 
-    // Ouverture du fichier en écriture
     std::ofstream outFile(fileName, std::ios::binary);
     if (!outFile.is_open())
     {
@@ -136,12 +142,13 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         return;
     }
 
-    size_t totalBytesWritten = 0; // Variable pour suivre la progression
+    size_t totalBytesWritten = 0;
     ssize_t bytesReceived = 0;
     std::vector<char> decompressedChunk;
+    auto startTime = std::chrono::steady_clock::now();
+    size_t chunkSize = DEFAULT_CHUNK_SIZE; // Taille du buffer dynamique initiale
 
-    // Boucle pour recevoir les données
-    while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
+    while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, chunkSize, 0,
                                      (struct sockaddr *)&clientAddr, &clientAddrLen)) > 0)
     {
         if (bytesReceived == -1)
@@ -150,16 +157,19 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             break;
         }
 
+        auto elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+        double bandwidth = calculateBandwidth(totalBytesWritten, elapsedTime);
+
+        // Ajuster la taille du buffer en fonction de la bande passante
+        chunkSize = adjustBufferSize(bandwidth);
+
         if (decompressFlag)
         {
-            // Décompression des données reçues
             bool decompressionSuccess = decompressChunk(std::vector<char>(metadataBuffer, metadataBuffer + bytesReceived), decompressedChunk, verbose);
 
             if (!decompressionSuccess)
             {
                 std::cerr << "Decompression error. Waiting for the client to resend the chunk.\n";
-
-                // Send error message back to client asking for re-compression or resending the chunk
                 const char *ackMessage = "Decompression failed. Please resend the chunk.";
                 ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
                                          (struct sockaddr *)&clientAddr, sizeof(clientAddr));
@@ -168,70 +178,31 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
                     logError("Error sending decompression error message to client.");
                     break;
                 }
-
-                // Continue to the next iteration to wait for the client to resend the chunk
                 continue;
             }
-            else
-            {
-                // Send error message back to client asking for re-compression or resending the chunk
-                const char *ackMessage = "1";
-                ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
-                                         (struct sockaddr *)&clientAddr, sizeof(clientAddr));
-                if (ackSent == -1)
-                {
-                    logError("Error sending decompression success message to client.");
-                    break;
-                }
-            }
 
-            // Écriture des données décompressées dans le fichier
             outFile.write(decompressedChunk.data(), decompressedChunk.size());
             totalBytesWritten += decompressedChunk.size();
         }
         else
         {
-            // Écriture des données directement dans le fichier
             outFile.write(metadataBuffer, bytesReceived);
             totalBytesWritten += bytesReceived;
-
-            // Send error message back to client asking for re-compression or resending the chunk
-            const char *ackMessage = "1";
-            ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
-                                     (struct sockaddr *)&clientAddr, sizeof(clientAddr));
-            if (ackSent == -1)
-            {
-                logError("Error sending decompression success message to client.");
-                break;
-            }
         }
 
-        // Affichage de progression
         if (verbose)
         {
             std::cout << "Progress: " << totalBytesWritten << " / " << fileSize << " bytes written.\n";
         }
 
-        // Stop if we have received the full file size
         if (totalBytesWritten >= fileSize)
         {
             break;
         }
     }
 
-    std::cout << "\nFile reception completed.\n";
-
-    // Vérification finale et fermeture des ressources
-    if (bytesReceived == -1)
-    {
-        logError("Error receiving data from client.");
-    }
-    else if (verbose)
-    {
-        std::cout << "File received successfully! Total bytes written: " << totalBytesWritten << " bytes.\n";
-    }
-
-    outFile.close(); // Fermeture explicite du fichier
+    outFile.close();
+    std::cout << "File reception completed.\n";
 }
 
 // Function to create and bind the server socket
