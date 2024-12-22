@@ -75,45 +75,30 @@ void adjustBufferSize(double bandwidth)
     CURRENT_CHUNK_SIZE = dynamicChunkSize;
 }
 
-// Function to decompress a chunk of data
-bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, bool verbose)
+bool decompressChunk(const std::vector<char> &input_chunk, std::vector<char> &output_chunk)
 {
-    uLongf outputSize = input.size() * 2; // Initial guess for decompressed size
-    std::vector<char> tempBuffer(outputSize);
+    uLongf output_size = input_chunk.size() * 2; // Initial guess for decompressed size
+    std::vector<char> temp_buffer(output_size);
+
     int result;
-
-    while (true)
+    do
     {
-        result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
-                            reinterpret_cast<const Bytef *>(input.data()), input.size());
+        result = uncompress(reinterpret_cast<Bytef *>(temp_buffer.data()), &output_size,
+                            reinterpret_cast<const Bytef *>(input_chunk.data()), input_chunk.size());
 
-        if (result == Z_OK)
+        if (result == Z_BUF_ERROR)
         {
-            break; // Decompression successful
+            output_size *= 2;
+            temp_buffer.resize(output_size);
         }
-        else if (result == Z_BUF_ERROR)
+        else if (result != Z_OK)
         {
-            // Buffer size insufficient, double the buffer size
-            outputSize *= 2;
-            tempBuffer.resize(outputSize);
+            logError("Decompression error: " + std::to_string(result));
+            return false; // Return false if an error occurs
         }
-        else
-        {
-            // Decompression error
-            std::cerr << "Decompression error: " << result << "\n";
-            return false;
-        }
-    }
+    } while (result == Z_BUF_ERROR);
 
-    // Resize output to the actual decompressed size
-    output.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
-
-    if (verbose)
-    {
-        std::cout << "Decompressed chunk successfully. Original size: " << input.size()
-                  << ", Decompressed size: " << outputSize << " bytes.\n";
-    }
-
+    output_chunk.insert(output_chunk.end(), temp_buffer.begin(), temp_buffer.begin() + output_size);
     return true;
 }
 
@@ -189,7 +174,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
         if (decompressFlag)
         {
-            bool decompressionSuccess = decompressChunk(std::vector<char>(metadataBuffer, metadataBuffer + bytesReceived), decompressedChunk, verbose);
+            bool decompressionSuccess = decompressChunk(std::vector<char>(metadataBuffer, metadataBuffer + bytesReceived), decompressedChunk);
 
             if (!decompressionSuccess)
             {
