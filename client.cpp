@@ -11,7 +11,7 @@
 
 #define DEFAULT_PORT 12345
 #define DEFAULT_SERVER "127.0.0.1"
-#define CHUNK_SIZE 4096
+#define CHUNK_SIZE 50000
 #define ACK_BUFFER_SIZE 1024
 
 template <typename T>
