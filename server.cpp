@@ -15,8 +15,26 @@
 #include <cstring> // For strerror()
 
 #define DEFAULT_PORT 12345
-#define DEFAULT_CHUNK_SIZE 4096
+#define MAX_CHUNK_SIZE 1000000 // Max chunk size (1 MB)
+#define MIN_CHUNK_SIZE 1024    // Min chunk size (1 KB)
+#define CHUNK_SIZE 4096        // Default chunk size (4 KB)
+
 #define ACK_BUFFER_SIZE 256
+
+// Global variable for current chunk size
+size_t CURRENT_CHUNK_SIZE = CHUNK_SIZE; // Initially set to default chunk size
+
+template <typename T>
+T my_min(T a, T b)
+{
+    return a < b ? a : b;
+}
+
+template <typename T>
+T my_max(T a, T b)
+{
+    return a > b ? a : b;
+}
 
 void showUsage()
 {
@@ -41,18 +59,25 @@ double calculateBandwidth(size_t bytesReceived, double elapsedTime)
 }
 
 // Fonction pour ajuster dynamiquement la taille du buffer en fonction de la bande passante
-size_t adjustBufferSize(double bandwidth)
+void adjustBufferSize(double bandwidth)
 {
-    size_t dynamicChunkSize = DEFAULT_CHUNK_SIZE;
-    if (bandwidth > 1000) // Si la bande passante est supérieure à 1 Mo/s, augmentez le buffer
+    // Définir une taille de chunk par défaut
+    size_t dynamicChunkSize = CURRENT_CHUNK_SIZE;
+
+    // Ajuster la taille du buffer en fonction de la bande passante
+    if (bandwidth > 1000) // Si la bande passante est supérieure à 1 Mo/s
     {
-        dynamicChunkSize = 8192; // Augmentez la taille du buffer (par exemple à 8 Ko)
+        // Augmenter la taille du buffer progressivement en fonction de la bande passante
+        dynamicChunkSize = my_min(dynamicChunkSize * 2, static_cast<size_t>(MAX_CHUNK_SIZE)); // Double the buffer size
     }
-    else if (bandwidth < 100) // Si la bande passante est inférieure à 100 Ko/s, réduisez le buffer
+    else if (bandwidth < 100) // Si la bande passante est inférieure à 100 Ko/s
     {
-        dynamicChunkSize = 1024; // Réduisez la taille du buffer (par exemple à 1 Ko)
+        // Réduire la taille du buffer progressivement en fonction de la bande passante
+        dynamicChunkSize = my_max(dynamicChunkSize / 2, static_cast<size_t>(MIN_CHUNK_SIZE)); // Reduce the buffer size
     }
-    return dynamicChunkSize;
+
+    // Mettre à jour la taille du buffer actuelle
+    CURRENT_CHUNK_SIZE = dynamicChunkSize;
 }
 
 // Function to decompress a chunk of data
@@ -142,18 +167,18 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         return;
     }
 
-
-    char buffer[CHUNK_SIZE];
+    // char buffer[CURRENT_CHUNK_SIZE];
     size_t totalBytesWritten = 0;
     ssize_t bytesReceived = 0;
     std::vector<char> decompressedChunk;
     auto startTime = std::chrono::steady_clock::now();
-    size_t chunkSize = DEFAULT_CHUNK_SIZE; // Taille du buffer dynamique initiale
+    size_t chunkSize = CURRENT_CHUNK_SIZE; // Taille du buffer dynamique initiale
 
-    if (verbose) {
+    if (verbose)
+    {
         std::cout << "Receiving file...\n";
     }
-    
+
     while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, chunkSize, 0,
                                      (struct sockaddr *)&clientAddr, &clientAddrLen)) > 0)
     {
@@ -167,7 +192,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         double bandwidth = calculateBandwidth(totalBytesWritten, elapsedTime);
 
         // Ajuster la taille du buffer en fonction de la bande passante
-        chunkSize = adjustBufferSize(bandwidth);
+        adjustBufferSize(bandwidth);
 
         if (decompressFlag)
         {
@@ -196,7 +221,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             totalBytesWritten += bytesReceived;
         }
 
-        // Send error message back to client asking for re-compression or resending the chunk
+        // Send success message to client
         const char *ackMessage = "1";
         ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
                                  (struct sockaddr *)&clientAddr, sizeof(clientAddr));
@@ -234,8 +259,7 @@ int createServerSocket(int port, bool verbose)
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);
-    // serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // Adresse localhost
+    serverAddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // Bind to all available interfaces
 
     if (bind(serverSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
     {
