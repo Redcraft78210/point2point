@@ -228,7 +228,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
                 // Send ACK message with the packet index
                 paquet_index++;
-                std::string ackMessage = "ACK " + std::to_string(paquet_index);
+                std::string ackMessage = std::to_string(paquet_index);
                 ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
                                          (struct sockaddr *)&clientAddr, sizeof(clientAddr));
                 if (ackSent == -1)
@@ -246,7 +246,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
             // Send ACK message with the packet index
             paquet_index++;
-            std::string ackMessage = "ACK " + std::to_string(paquet_index);
+            std::string ackMessage = std::to_string(paquet_index);
             ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
                                      (struct sockaddr *)&clientAddr, sizeof(clientAddr));
             if (ackSent == -1)

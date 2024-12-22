@@ -212,7 +212,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    // Dynamically allocate the buffer based on chunkSize
+    // Dynamically allocate an initial buffer
     size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
     char *buffer = new char[chunkSize];               // Allocate buffer for chunks
 
@@ -225,6 +225,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     {
         std::cout << "File size: " << fileSize << " bytes. Sending file...\n";
     }
+
     std::string fileName = std::string(filePath).substr(std::string(filePath).find_last_of("/\\") + 1);
 
     // Send file metadata
@@ -242,7 +243,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         double transferRate = (bytesSent / 1024.0) / elapsedTime;
 
         // Dynamically adjust the buffer size based on the current transfer rate
-        size_t chunkSize = calculateDynamicBufferSize(transferRate);
+        chunkSize = calculateDynamicBufferSize(transferRate);
         size_t bytesToRead = my_min(static_cast<size_t>(chunkSize), fileSize - bytesSent);
         delete[] buffer;              // Free old buffer
         buffer = new char[chunkSize]; // Reallocate buffer with new size
@@ -267,7 +268,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
                     delete[] buffer;
                     return;
                 }
-                fallbackToUncompressed = false;
+                fallbackToUncompressed = false; // Reset fallback flag
             }
             else
             {
