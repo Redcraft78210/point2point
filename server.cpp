@@ -97,6 +97,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     struct sockaddr_in clientAddr;
     socklen_t clientAddrLen = sizeof(clientAddr);
 
+    // Receive metadata
     ssize_t metadataReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
                                         (struct sockaddr *)&clientAddr, &clientAddrLen);
 
@@ -115,7 +116,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
     // Vérification du format de la donnée reçue
     std::string metadata(metadataBuffer, metadataReceived);
-    size_t delimiterPos = metadata.find('\0'); // Cherche le séparateur '\0'
+    size_t delimiterPos = metadata.find('\0');
     if (delimiterPos == std::string::npos)
     {
         logError("Invalid metadata format received! No delimiter found.");
@@ -146,12 +147,14 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         return;
     }
 
-    size_t totalBytesWritten = 0; // Variable pour suivre la progression
+    size_t totalBytesWritten = 0;
     ssize_t paquet_index = 0;
+    const ssize_t MAX_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB cap
+
     // Boucle pour recevoir les données
     while (totalBytesWritten < fileSize)
     {
-        // Premièrement, recevoir la taille du buffer
+        // Recevoir la taille du buffer
         ssize_t bufferSizeReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
                                               (struct sockaddr *)&clientAddr, &clientAddrLen);
 
@@ -165,9 +168,9 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         ssize_t bufferSize;
         memcpy(&bufferSize, metadataBuffer, sizeof(ssize_t));
 
-        if (bufferSize <= 0)
+        if (bufferSize <= 0 || bufferSize > MAX_CHUNK_SIZE)
         {
-            logError("Invalid buffer size received: " + std::to_string(bufferSize));
+            logError("Invalid or excessively large buffer size received: " + std::to_string(bufferSize));
             break;
         }
 
@@ -181,14 +184,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             break;
         }
 
-        const ssize_t MAX_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB cap
-        if (bufferSize > MAX_CHUNK_SIZE || bufferSize <= 0)
-        {
-            logError("Received invalid or excessively large buffer size: " + std::to_string(bufferSize));
-            break;
-        }
-
-        // Allocating buffer to receive the chunk of data of this size
+        // Allocating buffer to receive the chunk of data
         std::vector<char> chunkBuffer(bufferSize);
 
         // Recevoir les données du client
@@ -205,10 +201,7 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         {
             // Décompression des données reçues
             std::vector<char> decompressedChunk;
-            bool decompressionSuccess = decompressChunk(
-                chunkBuffer,
-                decompressedChunk,
-                verbose);
+            bool decompressionSuccess = decompressChunk(chunkBuffer, decompressedChunk, verbose);
 
             if (!decompressionSuccess)
             {
@@ -235,17 +228,6 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
                 // Write decompressed data to file
                 outFile.write(decompressedChunk.data(), decompressedChunk.size());
                 totalBytesWritten += decompressedChunk.size();
-
-                // Send ACK message with the packet index
-                paquet_index++;
-                std::string ackMessage = std::to_string(paquet_index);
-                ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
-                                         (struct sockaddr *)&clientAddr, sizeof(clientAddr));
-                if (ackSent == -1)
-                {
-                    logError("Error sending decompression success message to client.");
-                    break;
-                }
             }
         }
         else
@@ -253,18 +235,10 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             // Writing received data directly to the file
             outFile.write(chunkBuffer.data(), bytesReceived);
             totalBytesWritten += bytesReceived;
-
-            // Send ACK message with the packet index
-            paquet_index++;
-            std::string ackMessage = std::to_string(paquet_index);
-            ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
-                                     (struct sockaddr *)&clientAddr, sizeof(clientAddr));
-            if (ackSent == -1)
-            {
-                logError("Error sending ACK message to client.");
-                break;
-            }
         }
+
+        // Send ACK message with the updated packet index
+        paquet_index++;
 
         // Affichage de progression
         if (verbose)

@@ -389,7 +389,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         else
         {
             std::cerr << "\nSomething failed somewhere. Retrying...\n";
-            bytesSent -= readBytes; // Rewind the sent bytes for retry
+            continue;
         }
 
         bytesSent += readBytes;
