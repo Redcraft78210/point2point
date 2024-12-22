@@ -20,7 +20,13 @@
 template <typename T>
 T my_min(T a, T b)
 {
-    return (a < b) ? a : b;
+    return a < b ? a : b;
+}
+
+template <typename T>
+T my_max(T a, T b)
+{
+    return a > b ? a : b;
 }
 
 void showUsage()
@@ -142,7 +148,7 @@ bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char>
 
     output.resize(compressedSize);
 
-    if (compressedSize > CHUNK_SIZE) // Vérifie si la taille compressée dépasse la limite
+    if (compressedSize > MAX_CHUNK_SIZE)
     {
         fallbackToUncompressed = true; // Indique que le chunk compressé est trop gros
         if (verbose)
@@ -175,11 +181,11 @@ size_t adjustChunkSize(size_t currentChunkSize, double transferRate)
 {
     if (transferRate > 5000.0) // Si le débit est supérieur à 5000 KB/s
     {
-        return my_min(currentChunkSize * 2, MAX_CHUNK_SIZE); // Augmente la taille jusqu'à la limite
+        return my_min(currentChunkSize * 2, static_cast<size_t>(MAX_CHUNK_SIZE));
     }
-    else if (transferRate < 100.0) // Si le débit est très bas
+    else if (transferRate < 700.0) // Si le débit est très bas
     {
-        return my_max(currentChunkSize / 2, MIN_CHUNK_SIZE); // Réduit la taille jusqu'à la limite
+        return my_max(currentChunkSize / 2, static_cast<size_t>(MIN_CHUNK_SIZE));
     }
     return currentChunkSize; // Sinon, ne change pas la taille
 }
@@ -204,7 +210,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    size_t currentChunkSize = CHUNK_SIZE; // Initialiser avec une valeur par défaut
+    size_t currentChunkSize = MAX_CHUNK_SIZE; // Initialiser avec une valeur par défaut
     std::vector<char> buffer(currentChunkSize);
     std::vector<char> compressedChunk;
     bool fallbackToUncompressed = false;
