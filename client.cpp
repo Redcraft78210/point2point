@@ -213,8 +213,8 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     file.seekg(0, std::ios::beg);
 
     // Dynamically allocate the buffer based on chunkSize
-    size_t chunkSize = calculateDynamicBufferSize(0); // Par défaut, on passe 0 pour l'instant pour déterminer chunkSize
-    char *buffer = new char[chunkSize];               // Allouer un buffer de taille dynamique selon chunkSize
+    size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
+    char *buffer = new char[chunkSize];               // Allocate buffer for chunks
 
     std::vector<char> compressedChunk;
     bool fallbackToUncompressed = false;
@@ -235,18 +235,17 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     sockaddr_in ackAddr;
     socklen_t ackLen = sizeof(ackAddr);
 
-    ssize_t paquet_index = 0;
+    ssize_t paquet_index = 0; // Initial packet index
     while (bytesSent < fileSize)
     {
-
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytesSent / 1024.0) / elapsedTime;
 
         // Dynamically adjust the buffer size based on the current transfer rate
         size_t chunkSize = calculateDynamicBufferSize(transferRate);
         size_t bytesToRead = my_min(static_cast<size_t>(chunkSize), fileSize - bytesSent);
-        delete[] buffer;              // Libérer l'ancienne allocation
-        buffer = new char[chunkSize]; // Réallouer le buffer avec la nouvelle taille
+        delete[] buffer;              // Free old buffer
+        buffer = new char[chunkSize]; // Reallocate buffer with new size
         size_t readBytes = readFileChunk(file, buffer, bytesToRead);
 
         if (compressFlag)
@@ -313,25 +312,46 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         if (ackReceived == -1)
         {
             logError("Error receiving acknowledgment!");
-            delete[] buffer;
+            delete[] buffer; // Free buffer on error
             return;
         }
 
+        // Convert the received acknowledgment to a string only once
+        std::string ackMessage(ackBuffer, ackReceived);
+
         // If decompression failed on the server, we need to resend the data
-        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please resend the chunk.")
+        if (ackMessage == "Decompression failed. Please resend the chunk.")
         {
+            std::cerr << "\r" << std::string(500, ' ') << "\r"; // Clear previous line
             std::cerr << "\nDecompression failed on server. Retrying...\n";
-            bytesSent -= readBytes; // Rewind the sent bytes for retry
+            continue;
         }
-        else if (std::stol(std::string(ackBuffer, ackReceived)) != paquet_index + 1)
+
+        // Parse the acknowledgment message to check the packet index
+        long ackPacketIndex = -1;
+        try
         {
-            std::cout << std::string(ackBuffer, ackReceived);
-            std::cerr << "\nReception failed on server. Retrying...\n";
-            bytesSent -= readBytes; // Rewind the sent bytes for retry
+            ackPacketIndex = std::stol(ackMessage); // Convert the acknowledgment message to long
         }
-        else if (std::stol(std::string(ackBuffer, ackReceived)) == paquet_index + 1)
+        catch (const std::invalid_argument &e)
         {
-            paquet_index++;
+            std::cerr << "\nInvalid acknowledgment received. Retrying...\n";
+            continue;
+        }
+
+        // Check if the acknowledgment matches the expected packet index
+        if (ackPacketIndex != paquet_index + 1)
+        {
+            std::cerr << "\r" << std::string(500, ' ') << "\r"; // Clear the previous line
+            std::cerr << "\rReception failed on server. Retrying...\r";
+            continue;
+        }
+
+        // If the acknowledgment matches the expected packet index, proceed
+        if (ackPacketIndex == paquet_index + 1)
+        {
+            std::cerr << "\r" << std::string(500, ' ') << "\r"; // Clear the previous line
+            paquet_index++;                                     // Increment the packet index to the next expected one
         }
         else
         {
@@ -340,6 +360,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         }
 
         bytesSent += readBytes;
+
         // Display progress
         size_t totalBytesSent = bytesSent;
         showProgress(totalBytesSent, fileSize, elapsedTime);

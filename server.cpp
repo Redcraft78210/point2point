@@ -91,7 +91,7 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
     return true;
 }
 
-// Function to receive and save the file
+// Function to receive and save the file with enhanced ACK handling
 void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompressFlag, bool verbose)
 {
     char metadataBuffer[256];
@@ -155,7 +155,6 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
     // Boucle pour recevoir les données
     while (totalBytesWritten < fileSize)
     {
-
         // Premièrement, recevoir la taille du buffer
         ssize_t bufferSizeReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
                                               (struct sockaddr *)&clientAddr, &clientAddrLen);
@@ -226,10 +225,10 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             }
             else
             {
-                // Send index paquet as a sucess paquet reception
+                // Send ACK message with the paquet index
                 paquet_index++;
-                const char *ackMessage = std::to_string(paquet_index).c_str();
-                ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
+                std::string ackMessage = "ACK " + std::to_string(paquet_index);
+                ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
                                          (struct sockaddr *)&clientAddr, sizeof(clientAddr));
                 if (ackSent == -1)
                 {
@@ -248,14 +247,14 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             outFile.write(chunkBuffer.data(), bytesReceived);
             totalBytesWritten += bytesReceived;
 
-            // Send index paquet as a sucess paquet reception
+            // Send ACK message with the paquet index
             paquet_index++;
-            const char *ackMessage = std::to_string(paquet_index).c_str();
-            ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
+            std::string ackMessage = "ACK " + std::to_string(paquet_index);
+            ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
                                      (struct sockaddr *)&clientAddr, sizeof(clientAddr));
             if (ackSent == -1)
             {
-                logError("Error sending decompression success message to client.");
+                logError("Error sending ACK message to client.");
                 break;
             }
         }
