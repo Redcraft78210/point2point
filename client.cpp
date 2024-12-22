@@ -315,7 +315,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         }
 
         // If decompression failed on the server, we need to resend the data
-        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please re-compress and resend.")
+        if (std::string(ackBuffer, ackReceived) == "Decompression failed. Please resend the chunk.")
         {
             std::cerr << "\nDecompression failed on server. Retrying...\n";
             bytesSent -= readBytes; // Rewind the sent bytes for retry
