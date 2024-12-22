@@ -183,7 +183,6 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     }
 
     size_t bytesSent = 0;
-    size_t compressedBytesSent = 0;
     file.seekg(0, std::ios::end);
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
@@ -232,8 +231,6 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
                     logError("Error sending compressed data!");
                     return;
                 }
-
-                compressedBytesSent += compressedChunk.size();
             }
         }
         else
@@ -264,7 +261,7 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
         auto elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
 
         // Display progress
-        size_t totalBytesSent = compressFlag ? compressedBytesSent : bytesSent;
+        size_t totalBytesSent = bytesSent;
         showProgress(totalBytesSent, fileSize, elapsedTime);
     }
 

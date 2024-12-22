@@ -171,7 +171,9 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
 
                 // Continue to the next iteration to wait for the client to resend the chunk
                 continue;
-            }else {
+            }
+            else
+            {
                 // Send error message back to client asking for re-compression or resending the chunk
                 const char *ackMessage = "1";
                 ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
@@ -192,6 +194,16 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
             // Écriture des données directement dans le fichier
             outFile.write(metadataBuffer, bytesReceived);
             totalBytesWritten += bytesReceived;
+
+            // Send error message back to client asking for re-compression or resending the chunk
+            const char *ackMessage = "1";
+            ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
+                                     (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+            if (ackSent == -1)
+            {
+                logError("Error sending decompression success message to client.");
+                break;
+            }
         }
 
         // Affichage de progression
@@ -236,7 +248,7 @@ int createServerSocket(int port, bool verbose)
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);
     // serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Adresse localhost
+    serverAddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // Adresse localhost
 
     if (bind(serverSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
     {
