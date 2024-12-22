@@ -59,7 +59,7 @@ bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, 
             if (verbose)
             {
                 std::cout << "Decompressed successfully. Original size: " << input.size()
-                          << ", Decompressed size: " << sizeof tempBuffer.data() << " bytes.\n";
+                          << ", Decompressed size: " << tempBuffer.size() << " bytes.\n";
             }
             return true;
         }
