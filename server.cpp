@@ -142,12 +142,18 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         return;
     }
 
+
+    char buffer[CHUNK_SIZE];
     size_t totalBytesWritten = 0;
     ssize_t bytesReceived = 0;
     std::vector<char> decompressedChunk;
     auto startTime = std::chrono::steady_clock::now();
     size_t chunkSize = DEFAULT_CHUNK_SIZE; // Taille du buffer dynamique initiale
 
+    if (verbose) {
+        std::cout << "Receiving file...\n";
+    }
+    
     while ((bytesReceived = recvfrom(serverSocket, metadataBuffer, chunkSize, 0,
                                      (struct sockaddr *)&clientAddr, &clientAddrLen)) > 0)
     {
@@ -188,6 +194,16 @@ void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompress
         {
             outFile.write(metadataBuffer, bytesReceived);
             totalBytesWritten += bytesReceived;
+        }
+
+        // Send error message back to client asking for re-compression or resending the chunk
+        const char *ackMessage = "1";
+        ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
+                                 (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+        if (ackSent == -1)
+        {
+            logError("Error sending decompression success message to client.");
+            break;
         }
 
         if (verbose)

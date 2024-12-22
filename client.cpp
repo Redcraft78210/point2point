@@ -11,11 +11,12 @@
 
 #define DEFAULT_PORT 12345
 #define DEFAULT_SERVER "127.0.0.1"
-#define MIN_CHUNK_SIZE 1024   // Taille minimale du tampon
-#define MAX_CHUNK_SIZE 500000 // Taille maximale du tampon
-#define ADJUST_INTERVAL 5     // Intervalle en secondes pour ajuster la taille
-
+#define CHUNK_SIZE 50000
 #define ACK_BUFFER_SIZE 1024
+
+#define MAX_CHUNK_SIZE 1000000        // Max chunk size (1 MB)
+#define MIN_CHUNK_SIZE 1024           // Min chunk size (1 KB)
+#define BANDWIDTH_UPDATE_INTERVAL 1.0 // Interval to update bandwidth in seconds
 
 template <typename T>
 T my_min(T a, T b)
@@ -148,7 +149,7 @@ bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char>
 
     output.resize(compressedSize);
 
-    if (compressedSize > MAX_CHUNK_SIZE)
+    if (compressedSize > CHUNK_SIZE) // Vérifie si la taille compressée dépasse la limite
     {
         fallbackToUncompressed = true; // Indique que le chunk compressé est trop gros
         if (verbose)
@@ -176,32 +177,33 @@ void closeSocket(int sockfd)
     }
 }
 
-// Fonction pour ajuster dynamiquement la taille du tampon
-size_t adjustChunkSize(size_t currentChunkSize, double transferRate)
+void adjustBufferSize(size_t &currentChunkSize, double transferRate)
 {
-    if (transferRate > 5000.0) // Si le débit est supérieur à 5000 KB/s
+    if (transferRate > 0) // Valid transfer rate
     {
-        return my_min(currentChunkSize * 2, static_cast<size_t>(MAX_CHUNK_SIZE));
+        if (transferRate > 1000) // High bandwidth (KB/s)
+        {
+            currentChunkSize = std::min(currentChunkSize * 2, (size_t)MAX_CHUNK_SIZE);
+        }
+        else if (transferRate < 200) // Low bandwidth (KB/s)
+        {
+            currentChunkSize = std::max(currentChunkSize / 2, (size_t)MIN_CHUNK_SIZE);
+        }
     }
-    else if (transferRate < 700.0) // Si le débit est très bas
-    {
-        return my_max(currentChunkSize / 2, static_cast<size_t>(MIN_CHUNK_SIZE));
-    }
-    return currentChunkSize; // Sinon, ne change pas la taille
 }
 
 void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose, sockaddr_in &serverAddr)
 {
     if (!fileExists(filePath))
     {
-        logError("File does not exist!");
+        std::cerr << "Error: File does not exist!\n";
         return;
     }
 
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open())
     {
-        logError("Error opening file!");
+        std::cerr << "Error: Unable to open file!\n";
         return;
     }
 
@@ -210,12 +212,9 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     size_t fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    size_t currentChunkSize = MAX_CHUNK_SIZE; // Initialiser avec une valeur par défaut
-    std::vector<char> buffer(currentChunkSize);
-    std::vector<char> compressedChunk;
-    bool fallbackToUncompressed = false;
-    auto startTime = std::chrono::steady_clock::now();
-    auto lastAdjustTime = startTime;
+    size_t currentChunkSize = MIN_CHUNK_SIZE;
+    char *buffer = new char[MAX_CHUNK_SIZE]; // Allocate maximum possible buffer size
+
 
     if (verbose)
     {
@@ -226,86 +225,52 @@ void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose,
     // Send file metadata
     sendFileMetadata(sockfd, fileName, fileSize, serverAddr);
 
-    // Wait for acknowledgment before starting transfer
-    char ackBuffer[ACK_BUFFER_SIZE];
-    sockaddr_in ackAddr;
-    socklen_t ackLen = sizeof(ackAddr);
+    auto startTime = std::chrono::steady_clock::now();
+    auto lastBandwidthUpdate = startTime;
 
     while (bytesSent < fileSize)
     {
-        size_t bytesToRead = my_min(currentChunkSize, fileSize - bytesSent);
-        file.read(buffer.data(), bytesToRead);
-        size_t readBytes = file.gcount();
+        size_t bytesToRead = std::min(currentChunkSize, fileSize - bytesSent);
+        size_t readBytes = readFileChunk(file, buffer, bytesToRead);
 
-        auto chunkStartTime = std::chrono::steady_clock::now();
+        if (readBytes == 0)
+            break; // End of file
 
-        if (compressFlag)
+        if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
         {
-            if (!compressChunkWithFallback({buffer.begin(), buffer.begin() + readBytes}, compressedChunk, fallbackToUncompressed, verbose))
-            {
-                if (sendto(sockfd, buffer.data(), readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-                {
-                    logError("Error sending uncompressed data after compression failed!");
-                    return;
-                }
-                fallbackToUncompressed = false;
-            }
-            else
-            {
-                if (sendto(sockfd, compressedChunk.data(), compressedChunk.size(), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-                {
-                    logError("Error sending compressed data!");
-                    return;
-                }
-            }
-        }
-        else
-        {
-            if (sendto(sockfd, buffer.data(), readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-            {
-                logError("Error sending uncompressed data!");
-                return;
-            }
-        }
-
-        ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
-        if (ackReceived == -1)
-        {
-            logError("Error receiving acknowledgment!");
+            std::cerr << "Error: Failed to send data!\n";
+            delete[] buffer;
             return;
         }
 
         bytesSent += readBytes;
 
-        auto chunkEndTime = std::chrono::steady_clock::now();
-        double elapsedTime = std::chrono::duration<double>(chunkEndTime - chunkStartTime).count();
-        double transferRate = (readBytes / 1024.0) / elapsedTime; // KB/s
-
-        // Ajuster dynamiquement la taille du tampon à intervalles réguliers
+        // Calculate elapsed time and adjust chunk size
         auto currentTime = std::chrono::steady_clock::now();
-        if (std::chrono::duration<double>(currentTime - lastAdjustTime).count() >= ADJUST_INTERVAL)
+        double elapsedTime = std::chrono::duration<double>(currentTime - startTime).count();
+        if (std::chrono::duration<double>(currentTime - lastBandwidthUpdate).count() > BANDWIDTH_UPDATE_INTERVAL)
         {
-            currentChunkSize = adjustChunkSize(currentChunkSize, transferRate);
-            buffer.resize(currentChunkSize); // Redimensionner le tampon
-            lastAdjustTime = currentTime;
+            double transferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
+            adjustBufferSize(currentChunkSize, transferRate);
+            lastBandwidthUpdate = currentTime;
 
             if (verbose)
             {
-                std::cout << "\nAdjusted chunk size to " << currentChunkSize << " bytes based on transfer rate of " << transferRate << " KB/s.\n";
+                std::cout << "\rBytes sent: " << bytesSent
+                          << "/" << fileSize
+                          << " (" << (100 * bytesSent / fileSize) << "%)"
+                          << ", Current chunk size: " << currentChunkSize
+                          << ", Transfer rate: " << transferRate << " KB/s"
+                          << std::flush;
             }
         }
-
-        auto totalElapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-        showProgress(bytesSent, fileSize, totalElapsedTime);
     }
 
-    std::cout << std::endl;
-    if (verbose)
-    {
-        std::cout << "File sent successfully!\n";
-    }
-
+    delete[] buffer;
     file.close();
+
+    if (verbose)
+        std::cout << "\nFile transfer completed successfully.\n";
 }
 
 int main(int argc, char *argv[])
