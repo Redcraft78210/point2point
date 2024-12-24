@@ -4,12 +4,15 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <chrono>
+#include <thread>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
-#define SERVER_ADDR "127.0.0.1"
+#define SERVER_ADDR "192.168.1.240"
 #define BUFFER_SIZE 4096
 #define END_SIGNAL -1 // Signal de fin
+#define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
 void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
@@ -47,10 +50,22 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
 
     // Attendre la confirmation pour le nom de fichier
     int ack_seq_num;
-    ssize_t n = recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0);
-    if (n <= 0 || ack_seq_num != 0)
+    ssize_t n;
+    int retries = 0;
+    while (retries < MAX_RETRIES)
     {
-        std::cerr << "Erreur de confirmation pour le nom de fichier" << std::endl;
+        n = recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0);
+        if (n > 0 && ack_seq_num == 0)
+    {
+            break;
+        }
+        std::cerr << "Erreur de confirmation pour le nom de fichier, tentative " << retries + 1 << std::endl;
+        retries++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Attendre un peu avant de réessayer
+    }
+    if (retries == MAX_RETRIES)
+    {
+        std::cerr << "Échec de la confirmation pour le nom de fichier après " << MAX_RETRIES << " tentatives" << std::endl;
         return;
     }
 
@@ -60,26 +75,36 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         *((int *)buffer) = packet_number; // Ajouter le numéro de séquence au début du paquet
 
         size_t bytes_to_send = file.gcount() + sizeof(int);
-
+        retries = 0;
+        while (retries < MAX_RETRIES)
+        {
         ssize_t bytes_sent = sendto(udp_socket, buffer, bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
         if (bytes_sent < 0)
         {
-            std::cerr << "Erreur d'envoi du paquet UDP #" << packet_number << std::endl;
-            break;
+                std::cerr << "Erreur d'envoi du paquet UDP #" << packet_number << ", tentative " << retries + 1 << std::endl;
+                retries++;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Attendre un peu avant de réessayer
+                continue;
         }
 
         // Attente de la confirmation via TCP (ACK)
         int ack_seq_num;
         ssize_t n = recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0);
-        if (n <= 0)
+            if (n > 0 && ack_seq_num == packet_number)
+            {
+                break; // ACK correct reçu
+            }
+            else
         {
-            std::cerr << "Erreur de réception de la confirmation pour le paquet #" << packet_number << std::endl;
-            break;
+                std::cerr << "Confirmation incorrecte ou échec de réception pour le paquet #" << packet_number << ", tentative " << retries + 1 << std::endl;
+                retries++;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Attendre un peu avant de réessayer
+            }
         }
 
-        if (ack_seq_num != packet_number)
+        if (retries == MAX_RETRIES)
         {
-            std::cerr << "Confirmation incorrecte pour le paquet #" << packet_number << " (attendu : " << packet_number << ", reçu : " << ack_seq_num << ")" << std::endl;
+            std::cerr << "Échec de la réception de la confirmation pour le paquet #" << packet_number << " après " << MAX_RETRIES << " tentatives" << std::endl;
             break;
         }
     }
@@ -137,7 +162,7 @@ int main()
     }
 
     // Envoi du fichier par UDP avec confirmations TCP
-    send_file_udp(udp_socket, server_addr, "/home/816ctbe/Downloads/bash-5.2.tar.gz", tcp_socket);
+    send_file_udp(udp_socket, server_addr, "fichier_binaire_1G.bin", tcp_socket);
 
     // Fermer les sockets après l'envoi
     close(udp_socket);

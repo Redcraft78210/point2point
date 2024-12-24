@@ -6,12 +6,14 @@
 #include <sys/socket.h>
 #include <set>
 #include <thread>
+#include <chrono>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
 #define BUFFER_SIZE 4096
 #define OUTPUT_FILE "received_file.txt"
 #define END_SIGNAL -1 // Signal de fin
+#define MAX_RETRIES 20 // Nombre de tentatives pour chaque confirmation TCP
 
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
 void handle_udp(int udp_socket, int tcp_socket)
@@ -73,8 +75,29 @@ void handle_udp(int udp_socket, int tcp_socket)
                 fwrite(buffer + sizeof(int), 1, n - sizeof(int), output_file);
                 std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
 
-                // Envoyer la confirmation via TCP
-                send(tcp_socket, &seq_num, sizeof(seq_num), 0);
+                // Envoyer la confirmation via TCP avec ré-essai
+                int retries = 0;
+                bool ack_sent = false;
+                while (retries < MAX_RETRIES && !ack_sent)
+                {
+                    ssize_t bytes_sent = send(tcp_socket, &seq_num, sizeof(seq_num), 0);
+                    if (bytes_sent > 0)
+                    {
+                        ack_sent = true;
+                        std::cout << "Confirmation TCP envoyée pour le paquet #" << seq_num << std::endl;
+                    }
+                    else
+                    {
+                        retries++;
+                        std::cerr << "Échec d'envoi de la confirmation TCP pour le paquet #" << seq_num << ", tentative " << retries << std::endl;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Attendre avant de réessayer
+                    }
+                }
+
+                if (retries == MAX_RETRIES)
+                {
+                    std::cerr << "Impossible d'envoyer la confirmation TCP pour le paquet #" << seq_num << " après " << MAX_RETRIES << " tentatives." << std::endl;
+                }
             }
             else
             {
