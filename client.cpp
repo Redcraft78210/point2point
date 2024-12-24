@@ -1,474 +1,146 @@
 #include <iostream>
 #include <fstream>
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include <cstring>
 #include <unistd.h>
-#include <string.h>
-#include <getopt.h>
-#include <vector>
-#include <zlib.h>
-#include <chrono>
-#include <iomanip>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
-#define DEFAULT_PORT 12345
-#define DEFAULT_SERVER "127.0.0.1"
-#define ACK_BUFFER_SIZE 1024
+#define UDP_PORT 12345
+#define TCP_PORT 12346
+#define SERVER_ADDR "127.0.0.1"
+#define BUFFER_SIZE 4096
+#define END_SIGNAL -1 // Signal de fin
 
-template <typename T>
-T my_min(T a, T b)
+// Fonction pour envoyer un fichier par UDP avec confirmation via TCP
+void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
 {
-    return (a < b) ? a : b;
-}
-
-void showUsage()
-{
-    std::cout << "Usage: file_sender [options]\n";
-    std::cout << "  -h, --help            Affiche l'aide\n";
-    std::cout << "  -f, --file <file>      Fichier à envoyer\n";
-    std::cout << "  -p, --port <port>      Port du serveur (défaut: 12345)\n";
-    std::cout << "  -a, --address <ip>     Adresse IP du serveur (défaut: 127.0.0.1)\n";
-    std::cout << "  -c, --compress         Active la compression\n";
-    std::cout << "  -v, --verbose          Affiche des informations détaillées\n";
-}
-
-void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
-{
-    int progress = static_cast<int>((bytesSent * 100) / totalBytes);
-    double transferRate = (bytesSent / 1024.0) / elapsedTime; // Ko/s
-
-    // Convertir le taux de transfert en fonction de sa taille
-    std::string rateUnit = "KB/s";
-    if (transferRate >= 1024)
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file)
     {
-        transferRate /= 1024; // Convertir en Mo/s
-        rateUnit = "MB/s";
-    }
-    if (transferRate >= 1024)
-    {
-        transferRate /= 1024; // Convertir en Go/s
-        rateUnit = "GB/s";
-    }
-
-    // Affichage du progrès et du taux de transfert
-    std::cout << "\rProgress: [";
-    for (int i = 0; i < 50; i++)
-    {
-        if (i < progress / 2)
-            std::cout << "#";
-        else
-            std::cout << " ";
-    }
-    std::cout << "] " << progress << "%  Rate: "
-              << std::fixed << std::setprecision(2) // Limite à 2 décimales
-              << transferRate << " " << rateUnit;
-
-    std::flush(std::cout);
-}
-
-bool fileExists(const std::string &fileName)
-{
-    std::ifstream file(fileName);
-    return file.is_open();
-}
-
-void sendFileMetadata(int sockfd, const std::string &fileName, size_t fileSize, sockaddr_in &serverAddr)
-{
-    // Convertir la taille du fichier en chaîne
-    std::string fileSizeStr = std::to_string(fileSize);
-
-    // Calcul de la taille totale des métadonnées : nom du fichier + '\0' + taille du fichier
-    size_t metadataSize = fileName.size() + 1 + fileSizeStr.size(); // +1 pour '\0'
-
-    // Vérifier si la taille est raisonnable pour éviter les débordements
-    if (metadataSize > 1024)
-    { // Par exemple, limiter la taille à 1024 octets
-        std::cerr << "Metadata size is too large!" << std::endl;
-        return; // Eviter de poursuivre l'exécution si la taille est trop grande
-    }
-
-    // Allocation de mémoire pour les métadonnées
-    char *metadata = new char[metadataSize];
-
-    // Copier le nom du fichier et la taille dans le buffer
-    memcpy(metadata, fileName.c_str(), fileName.size());
-    metadata[fileName.size()] = '\0'; // Ajouter explicitement le terminator null
-    memcpy(metadata + fileName.size() + 1, fileSizeStr.c_str(), fileSizeStr.size());
-
-    // Envoyer les métadonnées
-    ssize_t sentBytes = sendto(sockfd, metadata, metadataSize, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr));
-    if (sentBytes == -1)
-    {
-        std::cerr << "Error sending file metadata!" << std::endl;
-    }
-    else
-    {
-        std::cout << "File metadata sent successfully." << std::endl;
-    }
-
-    delete[] metadata;
-}
-
-void logError(const std::string &message)
-{
-    std::cerr << "Error: " << message << std::endl;
-}
-
-void setupClient(int &serverSocket, sockaddr_in &serverAddr, const std::string &serverIP, int port, bool verbose)
-{
-    if (verbose)
-    {
-        std::cout << "Creating socket...\n";
-    }
-
-    serverSocket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (serverSocket == -1)
-    {
-        logError("Error creating socket!");
-        exit(1);
-    }
-
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    serverAddr.sin_addr.s_addr = inet_addr(serverIP.c_str());
-
-    if (verbose)
-    {
-        std::cout << "Socket created, preparing to connect to " << serverIP << ":" << port << "...\n";
-    }
-}
-
-bool compressChunkWithFallback(const std::vector<char> &input, std::vector<char> &output, bool &fallbackToUncompressed, bool verbose, size_t chunkSize)
-{
-    uLongf compressedSize = compressBound(input.size());
-    output.resize(compressedSize);
-
-    int result = compress2(reinterpret_cast<Bytef *>(output.data()), &compressedSize,
-                           reinterpret_cast<const Bytef *>(input.data()), input.size(), Z_BEST_COMPRESSION);
-    if (result != Z_OK)
-    {
-        fallbackToUncompressed = true; // Indique un échec de compression
-        if (verbose)
-        {
-            std::cerr << "Compression failed, fallback to uncompressed.\n";
-        }
-        return false;
-    }
-
-    output.resize(compressedSize);
-
-    if (compressedSize > chunkSize) // Vérifie si la taille compressée dépasse la limite
-    {
-        fallbackToUncompressed = true; // Indique que le chunk compressé est trop gros
-        if (verbose)
-        {
-            std::cerr << "Compressed chunk exceeds size limit, fallback to uncompressed.\n";
-        }
-        return false;
-    }
-
-    return true;
-}
-
-size_t readFileChunk(std::ifstream &file, char *buffer, size_t chunkSize)
-{
-    file.read(buffer, chunkSize);
-    return file.gcount();
-}
-
-void closeSocket(int sockfd)
-{
-    if (close(sockfd) == -1)
-    {
-        logError("Error closing socket!");
-        exit(1);
-    }
-}
-
-size_t calculateDynamicBufferSize(double transferRate)
-{
-    // For example, use transfer rate (in KB/s) to adjust buffer size
-    size_t dynamicChunkSize = static_cast<size_t>(transferRate * 1024);      // Buffer size based on transfer rate in bytes
-    dynamicChunkSize = my_min(dynamicChunkSize, static_cast<size_t>(50000)); // Cast 50000 to size_t
-    return dynamicChunkSize > 0 ? dynamicChunkSize : 1024;
-}
-
-void sendFile(int sockfd, const char *filePath, bool compressFlag, bool verbose, sockaddr_in &serverAddr)
-{
-    if (!fileExists(filePath))
-    {
-        logError("File does not exist!");
+        std::cerr << "Erreur d'ouverture du fichier" << std::endl;
         return;
     }
 
-    std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open())
+    char buffer[BUFFER_SIZE];
+    socklen_t server_len = sizeof(server_addr);
+    int packet_number = 0;
+
+    // Transmettre le nom du fichier en premier paquet
+    std::string file_name = std::string(file_path).substr(std::string(file_path).find_last_of("/\\") + 1);
+    size_t name_length = file_name.size();
+
+    if (name_length >= BUFFER_SIZE - sizeof(int))
     {
-        logError("Error opening file!");
+        std::cerr << "Nom de fichier trop long pour être transmis" << std::endl;
         return;
     }
 
-    size_t bytesSent = 0;
-    file.seekg(0, std::ios::end);
-    size_t fileSize = file.tellg();
-    file.seekg(0, std::ios::beg);
+    *((int *)buffer) = 0; // Paquet spécial pour le nom de fichier
+    std::memcpy(buffer + sizeof(int), file_name.c_str(), name_length);
 
-    // Dynamically allocate an initial buffer
-    size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
-    char *buffer = new char[chunkSize];               // Allocate buffer for chunks
-
-    std::vector<char> compressedChunk;
-    bool fallbackToUncompressed = false;
-
-    auto startTime = std::chrono::steady_clock::now();
-
-    if (verbose)
+    ssize_t bytes_sent = sendto(udp_socket, buffer, sizeof(int) + name_length, 0, (struct sockaddr *)&server_addr, server_len);
+    if (bytes_sent < 0)
     {
-        std::cout << "File size: " << fileSize << " bytes. Sending file...\n";
+        std::cerr << "Erreur d'envoi du nom de fichier" << std::endl;
+        return;
     }
 
-    std::string fileName = std::string(filePath).substr(std::string(filePath).find_last_of("/\\") + 1);
-
-    // Send file metadata
-    sendFileMetadata(sockfd, fileName, fileSize, serverAddr);
-
-    // Wait for acknowledgment before starting transfer
-    char ackBuffer[ACK_BUFFER_SIZE];
-    sockaddr_in ackAddr;
-    socklen_t ackLen = sizeof(ackAddr);
-
-    ssize_t paquet_index = 0; // Initial packet index
-    while (bytesSent < fileSize)
+    // Attendre la confirmation pour le nom de fichier
+    int ack_seq_num;
+    ssize_t n = recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0);
+    if (n <= 0 || ack_seq_num != 0)
     {
-        double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-        double transferRate = (bytesSent / 1024.0) / elapsedTime;
-
-        // Dynamically adjust the buffer size based on the current transfer rate
-        chunkSize = calculateDynamicBufferSize(transferRate);
-        size_t bytesToRead = my_min(static_cast<size_t>(chunkSize), fileSize - bytesSent);
-        delete[] buffer;              // Free old buffer
-        buffer = new char[chunkSize]; // Reallocate buffer with new size
-        size_t readBytes = readFileChunk(file, buffer, bytesToRead);
-
-        if (compressFlag)
-        {
-            if (!compressChunkWithFallback(std::vector<char>(buffer, buffer + readBytes), compressedChunk, fallbackToUncompressed, verbose, chunkSize))
-            {
-                // If compression fails, send uncompressed data
-                ssize_t dataSize = readBytes;
-                if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-                {
-                    logError("Error sending uncompressed data size!");
-                    delete[] buffer;
-                    return;
-                }
-
-                if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-                {
-                    logError("Error sending uncompressed data after compression failed!");
-                    delete[] buffer;
-                    return;
-                }
-                fallbackToUncompressed = false; // Reset fallback flag
-            }
-            else
-            {
-                // Send compressed data
-                ssize_t dataSize = compressedChunk.size();
-                if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-                {
-                    logError("Error sending compressed data size!");
-                    delete[] buffer;
-                    return;
-                }
-
-                // Wait for acknowledgment (server response)
-                ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
-                if (ackReceived == -1)
-                {
-                    logError("Error receiving acknowledgment!");
-                    delete[] buffer; // Free buffer on error
-                    return;
-                }
-
-                // Convert the received acknowledgment to a string only once
-                std::string ackMessage(ackBuffer, ackReceived);
-
-                // Parse the acknowledgment message to check the packet index
-                long ackPacketIndex = -1;
-                try
-                {
-                    ackPacketIndex = std::stol(ackMessage); // Convert the acknowledgment message to long
-                }
-                catch (const std::invalid_argument &e)
-                {
-                    std::cerr << "\nInvalid acknowledgment received. Retrying...\n";
-                    continue;
-                }
-
-                // Check if the acknowledgment matches the expected packet index
-                if (ackPacketIndex != paquet_index)
-                {
-                    system("clear"); // Linux/macOS clear screen command
-                    std::cerr << "\rReception failed on server. Retrying...\r";
-                    continue;
-                }
-
-                if (sendto(sockfd, compressedChunk.data(), compressedChunk.size(), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-                {
-                    logError("Error sending compressed data!");
-                    delete[] buffer;
-                    return;
-                }
-            }
-        }
-        else
-        {
-            // Send uncompressed data
-            ssize_t dataSize = readBytes;
-            if (sendto(sockfd, &dataSize, sizeof(dataSize), 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-            {
-                logError("Error sending uncompressed data size!");
-                delete[] buffer;
-                return;
-            }
-
-            if (sendto(sockfd, buffer, readBytes, 0, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
-            {
-                logError("Error sending uncompressed data!");
-                delete[] buffer;
-                return;
-            }
-        }
-
-        // Wait for acknowledgment (server response)
-        ssize_t ackReceived = recvfrom(sockfd, ackBuffer, ACK_BUFFER_SIZE, 0, (struct sockaddr *)&ackAddr, &ackLen);
-        if (ackReceived == -1)
-        {
-            logError("Error receiving acknowledgment!");
-            delete[] buffer; // Free buffer on error
-            return;
-        }
-
-        // Convert the received acknowledgment to a string only once
-        std::string ackMessage(ackBuffer, ackReceived);
-
-        // If decompression failed on the server, we need to resend the data
-        if (ackMessage == "Decompression failed. Please resend the chunk.")
-        {
-            system("clear");
-            std::cerr << "\nDecompression failed on server. Retrying...\n";
-            continue;
-        }
-
-        // Parse the acknowledgment message to check the packet index
-        long ackPacketIndex = -1;
-        try
-        {
-            ackPacketIndex = std::stol(ackMessage); // Convert the acknowledgment message to long
-        }
-        catch (const std::invalid_argument &e)
-        {
-            std::cerr << "\nInvalid acknowledgment received. Retrying...\n";
-            continue;
-        }
-
-        // Check if the acknowledgment matches the expected packet index
-        if (ackPacketIndex != paquet_index + 1)
-        {
-            system("clear"); // Linux/macOS clear screen command
-            std::cerr << "\rReception failed on server. Retrying...\r";
-            continue;
-        }
-
-        // If the acknowledgment matches the expected packet index, proceed
-        if (ackPacketIndex == paquet_index + 1)
-        {
-            system("clear"); // Linux/macOS clear screen command
-            paquet_index++;  // Increment the packet index to the next expected one
-        }
-        else
-        {
-            std::cerr << "\nSomething failed somewhere. Retrying...\n";
-            continue;
-        }
-
-        bytesSent += readBytes;
-
-        // Display progress
-        size_t totalBytesSent = bytesSent;
-        showProgress(totalBytesSent, fileSize, elapsedTime);
+        std::cerr << "Erreur de confirmation pour le nom de fichier" << std::endl;
+        return;
     }
 
-    std::cout << std::endl;
-    if (verbose)
+    while (file.read(buffer + sizeof(int), sizeof(buffer) - sizeof(int)) || file.gcount() > 0)
     {
-        std::cout << "File sent successfully!\n";
+        packet_number++;
+        *((int *)buffer) = packet_number; // Ajouter le numéro de séquence au début du paquet
+
+        size_t bytes_to_send = file.gcount() + sizeof(int);
+
+        ssize_t bytes_sent = sendto(udp_socket, buffer, bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
+        if (bytes_sent < 0)
+        {
+            std::cerr << "Erreur d'envoi du paquet UDP #" << packet_number << std::endl;
+            break;
+        }
+
+        // Attente de la confirmation via TCP (ACK)
+        int ack_seq_num;
+        ssize_t n = recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0);
+        if (n <= 0)
+        {
+            std::cerr << "Erreur de réception de la confirmation pour le paquet #" << packet_number << std::endl;
+            break;
+        }
+
+        if (ack_seq_num != packet_number)
+        {
+            std::cerr << "Confirmation incorrecte pour le paquet #" << packet_number << " (attendu : " << packet_number << ", reçu : " << ack_seq_num << ")" << std::endl;
+            break;
+        }
     }
+
+    // Envoyer un paquet de fin (signal de fin)
+    *((int *)buffer) = END_SIGNAL;
+    bytes_sent = sendto(udp_socket, buffer, sizeof(int), 0, (struct sockaddr *)&server_addr, server_len);
+    if (bytes_sent < 0)
+    {
+        std::cerr << "Erreur d'envoi du signal de fin" << std::endl;
+    }
+
+    std::cout << "Envoi du fichier terminé." << std::endl;
 
     file.close();
-    delete[] buffer;
+    close(udp_socket);
+    close(tcp_socket);
 }
 
-int main(int argc, char *argv[])
+int main()
 {
-    std::string serverIP = DEFAULT_SERVER;
-    int port = DEFAULT_PORT;
-    std::string filePath;
-    bool compressFlag = false;
-    bool verbose = false;
-
-    // Parse command-line options
-    struct option longOpts[] = {
-        {"help", no_argument, nullptr, 'h'},
-        {"file", required_argument, nullptr, 'f'},
-        {"port", required_argument, nullptr, 'p'},
-        {"address", required_argument, nullptr, 'a'},
-        {"compress", no_argument, nullptr, 'c'},
-        {"verbose", no_argument, nullptr, 'v'},
-        {nullptr, 0, nullptr, 0}};
-
-    int opt;
-    while ((opt = getopt_long(argc, argv, "h:f:p:a:c:v", longOpts, nullptr)) != -1)
+    // Création de socket UDP
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket < 0)
     {
-        switch (opt)
-        {
-        case 'h':
-            showUsage();
-            return 0;
-        case 'f':
-            filePath = optarg;
-            break;
-        case 'p':
-            port = std::stoi(optarg);
-            break;
-        case 'a':
-            serverIP = optarg;
-            break;
-        case 'c':
-            compressFlag = true;
-            break;
-        case 'v':
-            verbose = true;
-            break;
-        default:
-            showUsage();
-            return 1;
-        }
+        std::cerr << "Erreur de création socket UDP" << std::endl;
+        return -1;
     }
 
-    if (filePath.empty())
+    // Création de socket TCP
+    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (tcp_socket < 0)
     {
-        logError("No file specified!");
-        return 1;
+        std::cerr << "Erreur de création socket TCP" << std::endl;
+        return -1;
     }
 
-    int serverSocket;
-    sockaddr_in serverAddr;
-    setupClient(serverSocket, serverAddr, serverIP, port, verbose);
+    sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(UDP_PORT);
+    inet_pton(AF_INET, SERVER_ADDR, &server_addr.sin_addr);
 
-    // Send the file
-    sendFile(serverSocket, filePath.c_str(), compressFlag, verbose, serverAddr);
+    // Connexion TCP
+    sockaddr_in tcp_server_addr;
+    memset(&tcp_server_addr, 0, sizeof(tcp_server_addr));
+    tcp_server_addr.sin_family = AF_INET;
+    tcp_server_addr.sin_port = htons(TCP_PORT);
+    inet_pton(AF_INET, SERVER_ADDR, &tcp_server_addr.sin_addr);
 
-    closeSocket(serverSocket); // Ensure socket is closed after use
+    if (connect(tcp_socket, (struct sockaddr *)&tcp_server_addr, sizeof(tcp_server_addr)) < 0)
+    {
+        std::cerr << "Erreur de connexion TCP" << std::endl;
+        return -1;
+    }
+
+    // Envoi du fichier par UDP avec confirmations TCP
+    send_file_udp(udp_socket, server_addr, "/home/816ctbe/Downloads/bash-5.2.tar.gz", tcp_socket);
+
+    // Fermer les sockets après l'envoi
+    close(udp_socket);
+    close(tcp_socket);
     return 0;
 }

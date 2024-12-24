@@ -1,350 +1,176 @@
 #include <iostream>
 #include <fstream>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <string.h>
-#include <vector>
-#include <getopt.h>
-#include <zlib.h>
-#include <chrono>
-#include <cstdlib>
-#include <cstdio>
-#include <cassert>
-#include <cerrno>
 #include <cstring>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <set>
+#include <thread>
 
-#define DEFAULT_PORT 12345
-#define CHUNK_SIZE 4096
-#define ACK_BUFFER_SIZE 256
+#define UDP_PORT 12345
+#define TCP_PORT 12346
+#define BUFFER_SIZE 4096
+#define OUTPUT_FILE "received_file.txt"
+#define END_SIGNAL -1 // Signal de fin
 
-void showUsage()
+// Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
+void handle_udp(int udp_socket, int tcp_socket)
 {
-    std::cout << "Usage: file_receiver [options]\n";
-    std::cout << "  -h, --help            Display help\n";
-    std::cout << "  -p, --port <port>     Port to listen on (default: 12345)\n";
-    std::cout << "  -f, --file <file>     Destination file\n";
-    std::cout << "  -c, --decompress      Enable decompression\n";
-    std::cout << "  -v, --verbose         Show detailed information\n";
-}
+    sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    std::string file_name;
 
-void logError(const std::string &message)
-{
-    std::cerr << "Error: " << message << std::endl;
-}
+    // Set pour suivre les numéros de séquence des paquets reçus
+    std::set<int> received_sequence_numbers;
 
-bool decompressChunk(const std::vector<char> &input, std::vector<char> &output, bool verbose)
-{
-    uLongf outputSize = input.size() * 2;
-    std::vector<char> tempBuffer(outputSize);
-
+    FILE *output_file = nullptr;
     while (true)
     {
-        const uLongf MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
-        if (outputSize > MAX_BUFFER_SIZE)
+        int n = recvfrom(udp_socket, buffer, sizeof(buffer), 0, (struct sockaddr *)&client_addr, &client_len);
+        if (n > 0)
         {
-            if (verbose)
+            // Extraire le numéro de séquence du paquet
+            int seq_num = *((int *)buffer);
+
+            // Si le signal de fin est reçu, terminer l'envoi
+            if (seq_num == END_SIGNAL)
             {
-                std::cerr << "Decompression buffer size exceeded maximum limit.\n";
+                std::cout << "Serveur UDP : fin de l'envoi des paquets" << std::endl;
+                break;
             }
-            return false;
-        }
 
-        int result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
-                                reinterpret_cast<const Bytef *>(input.data()), input.size());
-
-        if (result == Z_OK)
-        {
-            output.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
-            if (verbose)
+            // Si c'est le premier paquet (nom du fichier)
+            if (seq_num == 0)
             {
-                std::cout << "Decompressed successfully. Original size: " << input.size()
-                          << ", Decompressed size: " << tempBuffer.size() << " bytes.\n";
-            }
-            return true;
-        }
-        else if (result == Z_BUF_ERROR)
-        {
-            outputSize *= 2;
-            tempBuffer.resize(outputSize);
-        }
-        else
-        {
-            if (verbose)
-            {
-                // Decompression error
-                std::cerr << "Decompression error: " << result << "\n";
-            }
-            return false;
-        }
-    }
+                file_name = std::string(buffer + sizeof(int), n - sizeof(int));
+                std::cout << "Nom du fichier reçu : " << file_name << std::endl;
 
-    // Resize output to the actual decompressed size
-    output.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
-
-    if (verbose)
-    {
-        std::cout << "Decompressed chunk successfully. Original size: " << input.size()
-                  << ", Decompressed size: " << outputSize << " bytes.\n";
-    }
-
-    return true;
-}
-
-void saveReceivedFile(int serverSocket, sockaddr_in &serverAddr, bool decompressFlag, bool verbose)
-{
-    char metadataBuffer[256];
-    struct sockaddr_in clientAddr;
-    socklen_t clientAddrLen = sizeof(clientAddr);
-
-    // Receive metadata
-    ssize_t metadataReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
-                                        (struct sockaddr *)&clientAddr, &clientAddrLen);
-
-    if (metadataReceived <= 0)
-    {
-        if (metadataReceived == 0)
-        {
-            logError("No data received!");
-        }
-        else
-        {
-            logError("Failed to receive metadata! Error: " + std::string(strerror(errno)));
-        }
-        return;
-    }
-
-    // Vérification du format de la donnée reçue
-    std::string metadata(metadataBuffer, metadataReceived);
-    size_t delimiterPos = metadata.find('\0');
-    if (delimiterPos == std::string::npos)
-    {
-        logError("Invalid metadata format received! No delimiter found.");
-        return;
-    }
-
-    std::string fileName = metadata.substr(0, delimiterPos);
-    std::string fileSizeStr = metadata.substr(delimiterPos + 1);
-    size_t fileSize = 0;
-
-    try
-    {
-        fileSize = std::stoull(fileSizeStr);
-    }
-    catch (const std::exception &e)
-    {
-        logError("Failed to parse file size from metadata! Error: " + std::string(e.what()));
-        return;
-    }
-
-    std::cout << "Receiving file: " << fileName << ", size: " << fileSize << " bytes\n";
-
-    // Ouverture du fichier en écriture
-    std::ofstream outFile(fileName, std::ios::binary);
-    if (!outFile.is_open())
-    {
-        logError("Error opening output file!");
-        return;
-    }
-
-    size_t totalBytesWritten = 0;
-    ssize_t paquet_index = 0;
-    const ssize_t MAX_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB cap
-
-    // Boucle pour recevoir les données
-    while (totalBytesWritten < fileSize)
-    {
-        // Recevoir la taille du buffer
-        ssize_t bufferSizeReceived = recvfrom(serverSocket, metadataBuffer, sizeof(metadataBuffer), 0,
-                                              (struct sockaddr *)&clientAddr, &clientAddrLen);
-
-        if (bufferSizeReceived == -1)
-        {
-            logError("Error receiving buffer size. Error: " + std::string(strerror(errno)));
-            break;
-        }
-
-        // Convertir la taille du buffer reçu en size_t
-        ssize_t bufferSize;
-        memcpy(&bufferSize, metadataBuffer, sizeof(ssize_t));
-
-        if (bufferSize <= 0 || bufferSize > MAX_CHUNK_SIZE)
-        {
-            logError("Invalid or excessively large buffer size received: " + std::to_string(bufferSize));
-            break;
-        }
-
-        // Send ACK message with the packet index
-        std::string ackMessage = std::to_string(paquet_index);
-        ssize_t ackSent = sendto(serverSocket, ackMessage.c_str(), ackMessage.length(), 0,
-                                 (struct sockaddr *)&clientAddr, sizeof(clientAddr));
-        if (ackSent == -1)
-        {
-            logError("Error sending ACK message to client.");
-            break;
-        }
-
-        // Allocating buffer to receive the chunk of data
-        std::vector<char> chunkBuffer(bufferSize);
-
-        // Recevoir les données du client
-        ssize_t bytesReceived = recvfrom(serverSocket, chunkBuffer.data(), bufferSize, 0,
-                                         (struct sockaddr *)&clientAddr, &clientAddrLen);
-
-        if (bytesReceived <= 0)
-        {
-            logError("Error receiving data from client. Error: " + std::string(strerror(errno)));
-            break;
-        }
-
-        if (decompressFlag)
-        {
-            // Décompression des données reçues
-            std::vector<char> decompressedChunk;
-            bool decompressionSuccess = decompressChunk(chunkBuffer, decompressedChunk, verbose);
-
-            if (!decompressionSuccess)
-            {
-                if (verbose)
+                // Ouvrir le fichier pour écrire les données
+                output_file = fopen(file_name.c_str(), "wb");
+                if (!output_file)
                 {
-                    std::cerr << "Decompression error. Waiting for the client to resend the chunk.\n";
+                    std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
+                    return;
                 }
 
-                // Send error message back to client asking for re-compression or resending the chunk
-                const char *ackMessage = "Decompression failed. Please resend the chunk.";
-                ssize_t ackSent = sendto(serverSocket, ackMessage, strlen(ackMessage), 0,
-                                         (struct sockaddr *)&clientAddr, sizeof(clientAddr));
-                if (ackSent == -1)
-                {
-                    logError("Error sending decompression error message to client.");
-                    break;
-                }
-
-                // Skip processing this chunk and wait for a new chunk to be sent
+                // Envoyer une confirmation pour le nom du fichier
+                send(tcp_socket, &seq_num, sizeof(seq_num), 0);
                 continue;
+            }
+
+            // Vérifier si le fichier est correctement ouvert
+            if (!output_file)
+            {
+                std::cerr << "Erreur : fichier non ouvert pour l'écriture." << std::endl;
+                return;
+            }
+
+            // Si ce paquet n'a pas encore été reçu, l'ajouter et écrire dans le fichier
+            if (received_sequence_numbers.find(seq_num) == received_sequence_numbers.end())
+            {
+                received_sequence_numbers.insert(seq_num);
+                fwrite(buffer + sizeof(int), 1, n - sizeof(int), output_file);
+                std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
+
+                // Envoyer la confirmation via TCP
+                send(tcp_socket, &seq_num, sizeof(seq_num), 0);
             }
             else
             {
-                // Write decompressed data to file
-                outFile.write(decompressedChunk.data(), decompressedChunk.size());
-                totalBytesWritten += decompressedChunk.size();
+                std::cout << "Paquet déjà reçu, ignoré : #" << seq_num << std::endl;
             }
         }
-        else
-        {
-            // Writing received data directly to the file
-            outFile.write(chunkBuffer.data(), bytesReceived);
-            totalBytesWritten += bytesReceived;
-        }
-
-        // Send ACK message with the updated packet index
-        paquet_index++;
-
-        // Affichage de progression
-        if (verbose)
-        {
-            std::cout << "Progress: " << totalBytesWritten << " / " << fileSize << " bytes written.\n";
-        }
-
-        // Stop if we have received the full file size
-        if (totalBytesWritten >= fileSize)
-        {
-            break;
-        }
     }
 
-    std::cout << "\nFile reception completed.\n";
-
-    if (verbose)
-    {
-        std::cout << "File received successfully! Total bytes written: " << totalBytesWritten << " bytes.\n";
-    }
-
-    outFile.close(); // Fermeture explicite du fichier
+    // Fermeture du fichier après l'écriture
+    fclose(output_file);
 }
 
-// Function to create and bind the server socket
-int createServerSocket(int port, bool verbose)
+// Fonction pour gérer la connexion TCP pour recevoir les confirmations
+void handle_tcp(int tcp_socket)
 {
-    int serverSocket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (serverSocket == -1)
+    char buffer[BUFFER_SIZE];
+    while (true)
     {
-        logError("Error creating socket!");
+        int n = recv(tcp_socket, buffer, sizeof(buffer), 0);
+        if (n > 0)
+        {
+            int seq_num = *((int *)buffer);
+            std::cout << "Confirmation TCP reçue pour le paquet #" << seq_num << std::endl;
+        }
+    }
+}
+
+int main()
+{
+    // Création de la socket UDP
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket < 0)
+    {
+        std::cerr << "Erreur de création socket UDP" << std::endl;
         return -1;
     }
 
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    // serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // Adresse localhost
-
-    if (bind(serverSocket, reinterpret_cast<sockaddr *>(&serverAddr), sizeof(serverAddr)) == -1)
+    // Création de la socket TCP
+    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (tcp_socket < 0)
     {
-        logError("Error binding socket!");
-        close(serverSocket);
+        std::cerr << "Erreur de création socket TCP" << std::endl;
         return -1;
     }
 
-    if (verbose)
+    sockaddr_in udp_addr, tcp_addr;
+    memset(&udp_addr, 0, sizeof(udp_addr));
+    udp_addr.sin_family = AF_INET;
+    udp_addr.sin_addr.s_addr = INADDR_ANY;
+    udp_addr.sin_port = htons(UDP_PORT);
+
+    memset(&tcp_addr, 0, sizeof(tcp_addr));
+    tcp_addr.sin_family = AF_INET;
+    tcp_addr.sin_addr.s_addr = INADDR_ANY;
+    tcp_addr.sin_port = htons(TCP_PORT);
+
+    // Liaison des sockets
+    if (bind(udp_socket, (struct sockaddr *)&udp_addr, sizeof(udp_addr)) < 0)
     {
-        std::cout << "Server listening on port " << port << "...\n";
+        std::cerr << "Erreur de liaison UDP" << std::endl;
+        return -1;
     }
 
-    return serverSocket;
-}
-
-int main(int argc, char *argv[])
-{
-    int port = DEFAULT_PORT;
-    std::string outputFileName = "received_file";
-    bool decompressFlag = false;
-    bool verbose = false;
-
-    struct option longOpts[] = {
-        {"help", no_argument, nullptr, 'h'},
-        {"port", required_argument, nullptr, 'p'},
-        {"file", required_argument, nullptr, 'f'},
-        {"decompress", no_argument, nullptr, 'c'},
-        {"verbose", no_argument, nullptr, 'v'},
-        {nullptr, 0, nullptr, 0}};
-
-    int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:f:cv", longOpts, nullptr)) != -1)
+    if (bind(tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0)
     {
-        switch (opt)
-        {
-        case 'h':
-            showUsage();
-            return 0;
-        case 'p':
-            port = std::stoi(optarg);
-            break;
-        case 'f':
-            outputFileName = optarg;
-            break;
-        case 'c':
-            decompressFlag = true;
-            break;
-        case 'v':
-            verbose = true;
-            break;
-        default:
-            showUsage();
-            return 1;
-        }
+        std::cerr << "Erreur de liaison TCP" << std::endl;
+        return -1;
     }
 
-    // Create the server socket and bind it
-    int serverSocket = createServerSocket(port, verbose);
-    if (serverSocket == -1)
-        return 1;
+    // Écoute sur le socket TCP
+    if (listen(tcp_socket, 5) < 0)
+    {
+        std::cerr << "Erreur de listen TCP" << std::endl;
+        return -1;
+    }
 
-    sockaddr_in serverAddr{};
-    saveReceivedFile(serverSocket, serverAddr, decompressFlag, verbose);
+    std::cout << "Serveur en attente de connexions..." << std::endl;
 
-    // Close the socket
-    close(serverSocket);
+    // Attente de la connexion du client via TCP
+    sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    int client_sock = accept(tcp_socket, (struct sockaddr *)&client_addr, &client_len);
+    if (client_sock < 0)
+    {
+        std::cerr << "Erreur de connexion TCP" << std::endl;
+        return -1;
+    }
 
+    // Lancer les threads pour gérer UDP et TCP
+    std::thread udp_thread(handle_udp, udp_socket, client_sock);
+    std::thread tcp_thread(handle_tcp, client_sock);
+
+    udp_thread.join();
+    tcp_thread.join();
+
+    close(udp_socket);
+    close(tcp_socket);
     return 0;
 }
