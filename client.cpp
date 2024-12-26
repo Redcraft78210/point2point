@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <string.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <thread>
 #include <sys/time.h> // Pour struct timeval
@@ -21,6 +22,16 @@
 #define BUFFER_SIZE 4096
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
+
+namespace
+{
+    volatile sig_atomic_t quitok = false;
+    void handle_break(int a)
+    {
+        if (a == SIGINT)
+            quitok = true;
+    }
+}
 
 template <typename T>
 T my_min(T a, T b)
@@ -51,7 +62,7 @@ void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en distant
     filePath = "data_to_send/fichier_binaire_1G.bin";
-    serverIP = "172.20.10.4";
+    serverIP = "192.168.1.240";
 }
 void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
@@ -117,12 +128,24 @@ size_t calculateDynamicBufferSize(double transferRate)
     // For example, use transfer rate (in KB/s) to adjust buffer size
     size_t dynamicChunkSize = static_cast<size_t>(transferRate * 1024);      // Buffer size based on transfer rate in bytes
     dynamicChunkSize = my_min(dynamicChunkSize, static_cast<size_t>(50000)); // Cast 50000 to size_t
-    return dynamicChunkSize > 0 ? dynamicChunkSize : 1024;
+    return dynamicChunkSize > 20000 ? dynamicChunkSize : 8096;
 }
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
 void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
 {
+
+    // Définir un délai d'attente de 15 secondes pour la réception
+    struct timeval timeout;
+    timeout.tv_sec = 15; // Délai d'attente de 15 secondes
+    timeout.tv_usec = 0;
+
+    if (setsockopt(tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
+    {
+        std::cerr << "Erreur de définition des options de socket." << std::endl;
+        return;
+    }
+
     std::ifstream file(file_path, std::ios::binary);
     if (!file)
     {
@@ -165,12 +188,12 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
 
     for (retries = 0; retries < MAX_RETRIES; retries++)
     {
+
         if (recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0) > 0 && ack_seq_num == 0)
         {
             break;
         }
         std::cerr << "\nErreur de confirmation pour le nom de fichier, tentative " << retries + 1 << std::endl;
-        retries++;
         std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
     }
     if (retries == MAX_RETRIES - 1)
@@ -181,7 +204,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     auto startTime = std::chrono::steady_clock::now();
     // Dynamically allocate an initial buffer
     size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
-    while (file.read(buffer.data() + sizeof(int), sizeof(buffer) - sizeof(int)) || file.gcount() > 0)
+    while (file.read(buffer.data() + sizeof(int), buffer.size() - sizeof(int)) || file.gcount() > 0)
     {
 
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
@@ -197,7 +220,6 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             if (bytes_sent < 0)
             {
                 std::cerr << "\nErreur d'envoi du paquet UDP #" << packet_number << ", tentative " << retries + 1 << std::endl;
-                retries++;
                 std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
                 continue;
             }
@@ -212,7 +234,6 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             else
             {
                 std::cerr << "\nConfirmation incorrecte ou échec de réception pour le paquet #" << packet_number << ", tentative " << retries + 1 << std::endl;
-                retries++;
                 std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
             }
         }
@@ -453,6 +474,17 @@ int main(int argc, char *argv[])
         close(udp_socket);
         close(tcp_socket);
         return -1;
+    }
+
+    struct sigaction sigbreak;
+    sigbreak.sa_handler = &handle_break;
+    sigemptyset(&sigbreak.sa_mask);
+    sigbreak.sa_flags = 0;
+    if (sigaction(SIGINT, &sigbreak, NULL) != 0)
+    {
+        std::perror("sigClose");
+        close(udp_socket);
+        close(tcp_socket);
     }
 
     // Send the file over UDP with TCP confirmations

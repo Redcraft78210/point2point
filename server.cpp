@@ -1,12 +1,13 @@
-#include <iostream>
-#include <fstream>
-#include <cstring>
-#include <unistd.h>
 #include <arpa/inet.h>
-#include <sys/socket.h>
-#include <set>
-#include <thread>
 #include <chrono>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <set>
+#include <signal.h>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -14,6 +15,16 @@
 #define OUTPUT_FILE "received_file.txt"
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives pour chaque confirmation TCP
+
+namespace
+{
+    volatile sig_atomic_t quitok = false;
+    void handle_break(int a)
+    {
+        if (a == SIGINT)
+            quitok = true;
+    }
+}
 
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
 void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
@@ -191,6 +202,18 @@ int main()
     // Lancer les threads pour gérer UDP et TCP
     std::thread udp_thread(handle_udp, udp_socket, client_sock, std::ref(udp_is_closed));
     std::thread tcp_thread(handle_tcp, client_sock, std::ref(udp_is_closed));
+
+    struct sigaction sigbreak;
+    sigbreak.sa_handler = &handle_break;
+    sigemptyset(&sigbreak.sa_mask);
+    sigbreak.sa_flags = 0;
+    if (sigaction(SIGINT, &sigbreak, NULL) != 0)
+    {
+        std::perror("sigClose");
+        close(udp_socket);
+        close(tcp_socket);
+        exit(23);
+    }
 
     udp_thread.join();
     tcp_thread.join();
