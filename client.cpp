@@ -14,6 +14,58 @@
 #define END_SIGNAL -1 // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
 
+
+template <typename T>
+T my_min(T a, T b)
+{
+    return (a < b) ? a : b;
+}
+
+void showUsage()
+{
+    std::cout << "Usage: file_sender [options]\n";
+    std::cout << "  -h, --help            Affiche l'aide\n";
+    std::cout << "  -f, --file <file>      Fichier à envoyer\n";
+    std::cout << "  -p, --port <port>      Port du serveur (défaut: 12345)\n";
+    std::cout << "  -a, --address <ip>     Adresse IP du serveur (défaut: 127.0.0.1)\n";
+    std::cout << "  -c, --compress         Active la compression\n";
+    std::cout << "  -v, --verbose          Affiche des informations détaillées\n";
+}
+
+void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
+{
+    int progress = static_cast<int>((bytesSent * 100) / totalBytes);
+    double transferRate = (bytesSent / 1024.0) / elapsedTime; // Ko/s
+
+    // Convertir le taux de transfert en fonction de sa taille
+    std::string rateUnit = "KB/s";
+    if (transferRate >= 1024)
+    {
+        transferRate /= 1024; // Convertir en Mo/s
+        rateUnit = "MB/s";
+    }
+    if (transferRate >= 1024)
+    {
+        transferRate /= 1024; // Convertir en Go/s
+        rateUnit = "GB/s";
+    }
+
+    // Affichage du progrès et du taux de transfert
+    std::cout << "\rProgress: [";
+    for (int i = 0; i < 50; i++)
+    {
+        if (i < progress / 2)
+            std::cout << "#";
+        else
+            std::cout << " ";
+    }
+    std::cout << "] " << progress << "%  Rate: "
+              << std::fixed << std::setprecision(2) // Limite à 2 décimales
+              << transferRate << " " << rateUnit;
+
+    std::flush(std::cout);
+}
+
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
 void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
 {
