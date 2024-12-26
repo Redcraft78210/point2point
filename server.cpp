@@ -12,11 +12,11 @@
 #define TCP_PORT 12346
 #define BUFFER_SIZE 4096
 #define OUTPUT_FILE "received_file.txt"
-#define END_SIGNAL -1 // Signal de fin
+#define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives pour chaque confirmation TCP
 
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
-void handle_udp(int udp_socket, int tcp_socket)
+void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 {
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
@@ -39,6 +39,7 @@ void handle_udp(int udp_socket, int tcp_socket)
             if (seq_num == END_SIGNAL)
             {
                 std::cout << "Serveur UDP : fin de l'envoi des paquets" << std::endl;
+                udp_is_closed = true;
                 break;
             }
 
@@ -111,10 +112,10 @@ void handle_udp(int udp_socket, int tcp_socket)
 }
 
 // Fonction pour gérer la connexion TCP pour recevoir les confirmations
-void handle_tcp(int tcp_socket)
+void handle_tcp(int tcp_socket, bool &udp_is_closed)
 {
     char buffer[BUFFER_SIZE];
-    while (true)
+    while (!udp_is_closed)
     {
         int n = recv(tcp_socket, buffer, sizeof(buffer), 0);
         if (n > 0)
@@ -186,9 +187,10 @@ int main()
         return -1;
     }
 
+    bool udp_is_closed = false;
     // Lancer les threads pour gérer UDP et TCP
-    std::thread udp_thread(handle_udp, udp_socket, client_sock);
-    std::thread tcp_thread(handle_tcp, client_sock);
+    std::thread udp_thread(handle_udp, udp_socket, client_sock, std::ref(udp_is_closed));
+    std::thread tcp_thread(handle_tcp, client_sock, std::ref(udp_is_closed));
 
     udp_thread.join();
     tcp_thread.join();
