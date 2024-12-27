@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -16,13 +17,31 @@
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives pour chaque confirmation TCP
 
-namespace
+int udp_socket = -1;
+int tcp_socket = -1;
+
+// Signal handler function
+void signal_handler(int signal)
 {
-    volatile sig_atomic_t quitok = false;
-    void handle_break(int a)
+    if (signal == SIGINT || signal == SIGTERM)
     {
-        if (a == SIGINT)
-            quitok = true;
+        std::cout << "\nSignal caught! Closing socket and exiting...\n";
+
+        // Close the socket if it's open
+        if (udp_socket != -1)
+        {
+            close(udp_socket);
+            std::cout << "UDP Socket closed successfully.\n";
+        }
+
+        if (tcp_socket != -1)
+        {
+            close(tcp_socket);
+            std::cout << "TCP Socket closed successfully.\n";
+        }
+
+        // Exit the program
+        exit(0);
     }
 }
 
@@ -31,21 +50,23 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 {
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
-    char buffer[BUFFER_SIZE];
+    std::vector<char> buffer(BUFFER_SIZE);
     std::string file_name;
-
+    int next_buffer_size;
     // Set pour suivre les numéros de séquence des paquets reçus
     std::set<int> received_sequence_numbers;
 
     FILE *output_file = nullptr;
     while (true)
     {
-        int n = recvfrom(udp_socket, buffer, sizeof(buffer), 0, (struct sockaddr *)&client_addr, &client_len);
+        int n = recvfrom(udp_socket, buffer.data(), buffer.size(), 0, (struct sockaddr *)&client_addr, &client_len);
         if (n > 0)
         {
             // Extraire le numéro de séquence du paquet
-            int seq_num = *((int *)buffer);
+            int seq_num = *reinterpret_cast<int *>(buffer.data());
+            next_buffer_size = *reinterpret_cast<int *>(buffer.data() + sizeof(int));
 
+            // std::cout << "next_buffer_size" << next_buffer_size << std::endl;
             // Si le signal de fin est reçu, terminer l'envoi
             if (seq_num == END_SIGNAL)
             {
@@ -57,7 +78,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             // Si c'est le premier paquet (nom du fichier)
             if (seq_num == 0)
             {
-                file_name = std::string(buffer + sizeof(int), n - sizeof(int));
+                file_name = std::string(buffer.data() + sizeof(int), n - sizeof(int));
                 std::cout << "Nom du fichier reçu : " << file_name << std::endl;
 
                 // Ouvrir le fichier pour écrire les données
@@ -84,7 +105,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             if (received_sequence_numbers.find(seq_num) == received_sequence_numbers.end())
             {
                 received_sequence_numbers.insert(seq_num);
-                fwrite(buffer + sizeof(int), 1, n - sizeof(int), output_file);
+                fwrite(buffer.data() + sizeof(int) * 2, 1, n - sizeof(int) * 2, output_file);
                 std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
 
                 // Envoyer la confirmation via TCP avec ré-essai
@@ -115,6 +136,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             {
                 std::cout << "Paquet déjà reçu, ignoré : #" << seq_num << std::endl;
             }
+
+            buffer.resize(next_buffer_size);
         }
     }
 
@@ -155,6 +178,24 @@ int main()
         return -1;
     }
 
+    // Set up sigaction
+    struct sigaction sa;
+    sa.sa_handler = signal_handler; // Set the signal handler function
+    sigemptyset(&sa.sa_mask);       // Clear the mask (no signals blocked)
+    sa.sa_flags = 0;                // No special flags
+
+    // Register the signal handler for SIGINT and SIGTERM
+    if (sigaction(SIGINT, &sa, nullptr) == -1)
+    {
+        perror("Error setting SIGINT handler");
+        return 1;
+    }
+    if (sigaction(SIGTERM, &sa, nullptr) == -1)
+    {
+        perror("Error setting SIGTERM handler");
+        return 1;
+    }
+
     sockaddr_in udp_addr, tcp_addr;
     memset(&udp_addr, 0, sizeof(udp_addr));
     udp_addr.sin_family = AF_INET;
@@ -180,7 +221,7 @@ int main()
     }
 
     // Écoute sur le socket TCP
-    if (listen(tcp_socket, 5) < 0)
+    if (listen(tcp_socket, 1) < 0)
     {
         std::cerr << "Erreur de listen TCP" << std::endl;
         return -1;
@@ -202,18 +243,6 @@ int main()
     // Lancer les threads pour gérer UDP et TCP
     std::thread udp_thread(handle_udp, udp_socket, client_sock, std::ref(udp_is_closed));
     std::thread tcp_thread(handle_tcp, client_sock, std::ref(udp_is_closed));
-
-    struct sigaction sigbreak;
-    sigbreak.sa_handler = &handle_break;
-    sigemptyset(&sigbreak.sa_mask);
-    sigbreak.sa_flags = 0;
-    if (sigaction(SIGINT, &sigbreak, NULL) != 0)
-    {
-        std::perror("sigClose");
-        close(udp_socket);
-        close(tcp_socket);
-        exit(23);
-    }
 
     udp_thread.join();
     tcp_thread.join();

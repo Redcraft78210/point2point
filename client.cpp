@@ -7,8 +7,8 @@
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
-#include <string.h>
 #include <signal.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <thread>
 #include <sys/time.h> // Pour struct timeval
@@ -23,21 +23,14 @@
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
 
-namespace
-{
-    volatile sig_atomic_t quitok = false;
-    void handle_break(int a)
-    {
-        if (a == SIGINT)
-            quitok = true;
-    }
-}
-
 template <typename T>
 T my_min(T a, T b)
 {
     return (a < b) ? a : b;
 }
+
+int udp_socket = -1;
+int tcp_socket = -1;
 
 void showUsage()
 {
@@ -52,10 +45,35 @@ void showUsage()
     std::cout << "  -v, --verbose          Affiche des informations détaillées\n";
 }
 
+// Signal handler function
+void signal_handler(int signal)
+{
+    if (signal == SIGINT || signal == SIGTERM)
+    {
+        std::cout << "\nSignal caught! Closing socket and exiting...\n";
+
+        // Close the socket if it's open
+        if (udp_socket != -1)
+        {
+            close(udp_socket);
+            std::cout << "UDP Socket closed successfully.\n";
+        }
+
+        if (tcp_socket != -1)
+        {
+            close(tcp_socket);
+            std::cout << "TCP Socket closed successfully.\n";
+        }
+
+        // Exit the program
+        exit(0);
+    }
+}
+
 void test1(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en local
-    serverIP = "192.168.1.22";
+    serverIP = "127.0.0.1";
     filePath = "data_to_send/fichier_binaire_1G.bin";
 }
 void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
@@ -204,12 +222,15 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     auto startTime = std::chrono::steady_clock::now();
     // Dynamically allocate an initial buffer
     size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
-    while (file.read(buffer.data() + sizeof(int), buffer.size() - sizeof(int)) || file.gcount() > 0)
+    while (file.read(buffer.data() + sizeof(int) * 2, buffer.size() - sizeof(int) * 2) || file.gcount() > 0)
     {
-
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+        double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
+
+        chunkSize = calculateDynamicBufferSize(transferRate);
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
+        *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = buffer.size();
 
         size_t bytes_to_send = file.gcount() + sizeof(int);
         ssize_t bytes_sent = 0;
@@ -246,9 +267,6 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
 
         totalBytesSents += bytes_to_send - sizeof(int);
         showProgress(totalBytesSents, totalBytestoSend, elapsedTime);
-        double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
-
-        chunkSize = calculateDynamicBufferSize(transferRate);
         buffer.resize(chunkSize);
     }
 
@@ -260,7 +278,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         std::cerr << "Erreur d'envoi du signal de fin" << std::endl;
     }
 
-    std::cout << "Envoi du fichier terminé." << std::endl;
+    std::cout << "\nEnvoi du fichier terminé." << std::endl;
 
     file.close();
     close(udp_socket);
@@ -392,7 +410,7 @@ int main(int argc, char *argv[])
     }
 
     // Create UDP socket
-    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0)
     {
         std::cerr << "Error creating UDP socket\n";
@@ -400,12 +418,30 @@ int main(int argc, char *argv[])
     }
 
     // Create TCP socket
-    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (tcp_socket < 0)
     {
         std::cerr << "Error creating TCP socket\n";
         close(udp_socket); // Close UDP socket before returning
         return -1;
+    }
+
+    // Set up sigaction
+    struct sigaction sa;
+    sa.sa_handler = signal_handler; // Set the signal handler function
+    sigemptyset(&sa.sa_mask);       // Clear the mask (no signals blocked)
+    sa.sa_flags = 0;                // No special flags
+
+    // Register the signal handler for SIGINT and SIGTERM
+    if (sigaction(SIGINT, &sa, nullptr) == -1)
+    {
+        perror("Error setting SIGINT handler");
+        return 1;
+    }
+    if (sigaction(SIGTERM, &sa, nullptr) == -1)
+    {
+        perror("Error setting SIGTERM handler");
+        return 1;
     }
 
     sockaddr_in server_addr;
@@ -474,17 +510,6 @@ int main(int argc, char *argv[])
         close(udp_socket);
         close(tcp_socket);
         return -1;
-    }
-
-    struct sigaction sigbreak;
-    sigbreak.sa_handler = &handle_break;
-    sigemptyset(&sigbreak.sa_mask);
-    sigbreak.sa_flags = 0;
-    if (sigaction(SIGINT, &sigbreak, NULL) != 0)
-    {
-        std::perror("sigClose");
-        close(udp_socket);
-        close(tcp_socket);
     }
 
     // Send the file over UDP with TCP confirmations
