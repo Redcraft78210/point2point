@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <iomanip> // For std::hex, std::setw, and std::setfill
 #include <iostream>
 #include <set>
 #include <signal.h>
@@ -12,7 +13,10 @@
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
+
 #define BUFFER_SIZE 8096
+#define HEADER_SIZE 8
+
 #define OUTPUT_FILE "received_file.txt"
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives pour chaque confirmation TCP
@@ -45,6 +49,55 @@ void signal_handler(int signal)
     }
 }
 
+void hexDump(const std::vector<char> &buffer)
+{
+    const size_t bytesPerLine = 16; // Nombre d'octets par ligne
+
+    for (size_t i = 0; i < buffer.size(); i += bytesPerLine)
+    {
+        // Afficher l'offset
+        std::cout << std::setw(8) << std::setfill('0') << std::hex << i << ": ";
+
+        // Afficher les octets en hexadécimal
+        for (size_t j = 0; j < bytesPerLine; ++j)
+        {
+            if (i + j < buffer.size())
+            {
+                unsigned char byte = static_cast<unsigned char>(buffer[i + j]);
+                std::cout << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(byte) << " ";
+            }
+            else
+            {
+                std::cout << "   "; // Espace pour les octets manquants
+            }
+        }
+
+        // Afficher les caractères ASCII
+        std::cout << "| ";
+        for (size_t j = 0; j < bytesPerLine; ++j)
+        {
+            if (i + j < buffer.size())
+            {
+                unsigned char byte = static_cast<unsigned char>(buffer[i + j]);
+                if (std::isprint(byte))
+                {
+                    std::cout << static_cast<char>(byte);
+                }
+                else
+                {
+                    std::cout << '.';
+                }
+            }
+            else
+            {
+                std::cout << ' '; // Espace pour les octets manquants
+            }
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::dec << std::endl;
+}
+
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
 void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 {
@@ -65,9 +118,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             // Extraire le numéro de séquence du paquet
             int seq_num = *reinterpret_cast<int *>(buffer.data());
             next_buffer_size = *reinterpret_cast<int *>(buffer.data() + sizeof(int));
-            std::cout << next_buffer_size << std::endl;
 
-            // std::cout << "next_buffer_size" << next_buffer_size << std::endl;
             // Si le signal de fin est reçu, terminer l'envoi
             if (seq_num == END_SIGNAL)
             {
@@ -76,23 +127,30 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 break;
             }
 
-            // Si c'est le premier paquet (nom du fichier)
-            if (seq_num == 0)
+            switch (seq_num)
             {
-                file_name = std::string(buffer.data() + sizeof(int), n - sizeof(int));
-                std::cout << "Nom du fichier reçu : " << file_name << std::endl;
-
-                // Ouvrir le fichier pour écrire les données
-                output_file = fopen(file_name.c_str(), "wb");
-                if (!output_file)
+            case 0:
+                // Si c'est le premier paquet (nom du fichier)
+                if (seq_num == 0)
                 {
-                    std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
-                    return;
-                }
+                    file_name = std::string(buffer.data() + sizeof(int), n - sizeof(int));
+                    std::cout << "Nom du fichier reçu : " << file_name << std::endl;
 
-                // Envoyer une confirmation pour le nom du fichier
-                send(tcp_socket, &seq_num, sizeof(seq_num), 0);
-                continue;
+                    // Ouvrir le fichier pour écrire les données
+                    output_file = fopen(file_name.c_str(), "wb");
+                    if (!output_file)
+                    {
+                        std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
+                        return;
+                    }
+
+                    // Envoyer une confirmation pour le nom du fichier
+                    send(tcp_socket, &seq_num, sizeof(seq_num), 0);
+                    continue;
+                }
+                break;
+            default:
+                break;
             }
 
             // Vérifier si le fichier est correctement ouvert
@@ -106,7 +164,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             if (received_sequence_numbers.find(seq_num) == received_sequence_numbers.end())
             {
                 received_sequence_numbers.insert(seq_num);
-                fwrite(buffer.data() + sizeof(int) * 2, 1, n - sizeof(int) * 2, output_file);
+                fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE, output_file);
                 std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
 
                 // Envoyer la confirmation via TCP avec ré-essai

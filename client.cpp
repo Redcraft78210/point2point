@@ -23,7 +23,7 @@
 #define BUFFER_SIZE 8096
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
-#define HEADER_SIZE 16
+#define HEADER_SIZE 8
 
 template <typename T>
 T my_min(T a, T b)
@@ -39,10 +39,6 @@ T my_max(T a, T b)
 
 int udp_socket = -1;
 int tcp_socket = -1;
-
-#include <iostream>
-#include <vector>
-#include <iomanip> // For std::hex, std::setw, and std::setfill
 
 void hexDump(const std::vector<char> &buffer)
 {
@@ -90,6 +86,7 @@ void hexDump(const std::vector<char> &buffer)
         }
         std::cout << std::endl;
     }
+    std::cout << std::dec << std::endl;
 }
 
 void showUsage()
@@ -201,17 +198,25 @@ bool compressChunk(const std::vector<char> &input, std::vector<char> &output, bo
     return true;
 }
 
-size_t calculateDynamicBufferSize(double transferRate)
+size_t recalculateBufferSize(double transferSpeedKbps = 0, size_t baseBufferSize = BUFFER_SIZE, double scalingFactor = 0.1)
 {
-    // Calcul de la taille du buffer dynamique basée sur la vitesse de transfert (en KB/s)
-    size_t dynamicChunkSize = static_cast<size_t>(transferRate * 1024);      // Taille du buffer en bytes
-    dynamicChunkSize = my_min(dynamicChunkSize, static_cast<size_t>(50000)); // Limite supérieure à 50000 bytes
-        std::cout << "\nspeed is: " << transferRate << std::endl;
+    /**
+     * Recalculates the buffer size based on the transfer speed.
+     *
+     * Parameters:
+     * - transferSpeedKbps (double): Transfer speed in KB/s.
+     * - baseBufferSize (size_t): Base buffer size in bytes (default is 1024 bytes).
+     * - scalingFactor (double): Scaling factor to adjust sensitivity to speed changes (default is 0.1).
+     *
+     * Returns:
+     * - size_t: New buffer size in bytes.
+     */
 
-    // Si la taille calculée est inférieure à BUFFER_SIZE, on retourne BUFFER_SIZE comme taille minimale
-    return my_max(dynamicChunkSize, static_cast<size_t>(BUFFER_SIZE));
+    // Calculate new buffer size
+    double newBufferSize = baseBufferSize + (transferSpeedKbps * scalingFactor * baseBufferSize);
+    // Ensure buffer size is at least the base size and at most 100KB
+    return static_cast<size_t>(std::min(static_cast<size_t>(60000), std::max(baseBufferSize, static_cast<size_t>(newBufferSize))));
 }
-
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
 void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
@@ -285,21 +290,24 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     }
     auto startTime = std::chrono::steady_clock::now();
     // Dynamically allocate an initial buffer
-    size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
+    size_t chunkSize = recalculateBufferSize(); // Default size to determine initial chunk size
     buffer.clear();
     buffer.resize(chunkSize);
     bytes_sent = 0;
-    while (file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE))
+
+    while (totalBytestoSend != totalBytesSents)
     {
-        // hexDump(buffer);
+        file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE);
+
+        size_t currentBufferSize = buffer.size();
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
 
-        chunkSize = calculateDynamicBufferSize(transferRate);
-        std::cout << "\nChunksize is: " << chunkSize << std::endl;
+        chunkSize = recalculateBufferSize(transferRate, currentBufferSize);
+
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
-        *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = buffer.size();
+        *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = chunkSize;
 
         size_t bytes_to_send = file.gcount() + HEADER_SIZE;
         bytes_sent = 0;
@@ -339,19 +347,28 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         buffer.resize(chunkSize);
     }
 
-    // Envoyer un paquet de fin (signal de fin)
-    *reinterpret_cast<int *>(buffer.data()) = END_SIGNAL;
-    sendto(udp_socket, buffer.data(), sizeof(int), 0, (struct sockaddr *)&server_addr, server_len);
-    if (bytes_sent < 0)
+    if (file.eof() && totalBytestoSend == totalBytesSents)
     {
-        std::cerr << "Erreur d'envoi du signal de fin" << std::endl;
+        buffer.resize(sizeof(int)); // Assurez-vous que le buffer est de taille suffisante pour contenir un int
+        *reinterpret_cast<int *>(buffer.data()) = END_SIGNAL;
+        sendto(udp_socket, buffer.data(), sizeof(int), 0, (struct sockaddr *)&server_addr, server_len);
+
+        if (bytes_sent < 0)
+        {
+            std::cerr << "Erreur d'envoi du signal de fin" << std::endl;
+        }
+        else
+        {
+            std::cout << "\nEnvoi du fichier terminé." << std::endl;
+        }
+    }
+    else
+    {
+        std::cerr << "\nEnvoi incomplet." << std::endl;
+        std::cerr << "Seulement " << totalBytesSents << "/" << totalBytestoSend << "octets ont été envoyés" << std::endl;
     }
 
-    std::cout << "\nEnvoi du fichier terminé." << std::endl;
-
     file.close();
-    close(udp_socket);
-    close(tcp_socket);
 }
 
 int main(int argc, char *argv[])
@@ -587,5 +604,6 @@ int main(int argc, char *argv[])
     // Close the sockets after sending
     close(udp_socket);
     close(tcp_socket);
+    std::cout << std::endl;
     return 0;
 }
