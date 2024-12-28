@@ -21,21 +21,14 @@
 #define TCP_PORT 12346
 #define SERVER_ADDR "127.0.0.1"
 #define BUFFER_SIZE 8096
+#define MIN_BUFFER_SIZE 8096
+#define MAX_BUFFER_SIZE 60000
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
 #define HEADER_SIZE 8
 
-template <typename T>
-T my_min(T a, T b)
-{
-    return (a < b) ? a : b;
-}
-
-template <typename T>
-T my_max(T a, T b)
-{
-    return (a > b) ? a : b;
-}
+#define ALPHA 0.5
+#define BETA 0.3
 
 int udp_socket = -1;
 int tcp_socket = -1;
@@ -198,24 +191,21 @@ bool compressChunk(const std::vector<char> &input, std::vector<char> &output, bo
     return true;
 }
 
-size_t recalculateBufferSize(double transferSpeedKbps = 0, size_t baseBufferSize = BUFFER_SIZE, double scalingFactor = 0.1)
+// Fonction pour ajuster la taille du buffer
+double adjustBufferSize(double currentSpeed = 0, double previousTime = 0, size_t currentBufferSize = BUFFER_SIZE)
 {
-    /**
-     * Recalculates the buffer size based on the transfer speed.
-     *
-     * Parameters:
-     * - transferSpeedKbps (double): Transfer speed in KB/s.
-     * - baseBufferSize (size_t): Base buffer size in bytes (default is 1024 bytes).
-     * - scalingFactor (double): Scaling factor to adjust sensitivity to speed changes (default is 0.1).
-     *
-     * Returns:
-     * - size_t: New buffer size in bytes.
-     */
+    // Calcul d'une nouvelle taille de buffer basée sur la vitesse
+    double newBufferSize = currentBufferSize * (1 + ALPHA * (currentSpeed / 1000.0));
 
-    // Calculate new buffer size
-    double newBufferSize = baseBufferSize + (transferSpeedKbps * scalingFactor * baseBufferSize);
-    // Ensure buffer size is at least the base size and at most 100KB
-    return static_cast<size_t>(std::min(static_cast<size_t>(60000), std::max(baseBufferSize, static_cast<size_t>(newBufferSize))));
+    // Ajustement basé sur le temps d'envoi du paquet précédent
+    double timeFactor = std::max(0.1, 1 - BETA * previousTime);
+    newBufferSize *= timeFactor;
+
+    // Limitation de la taille du buffer
+    newBufferSize = std::max(static_cast<double>(MIN_BUFFER_SIZE),
+                             std::min(static_cast<double>(MAX_BUFFER_SIZE), newBufferSize));
+
+    return newBufferSize;
 }
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
@@ -290,20 +280,20 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     }
     auto startTime = std::chrono::steady_clock::now();
     // Dynamically allocate an initial buffer
-    size_t chunkSize = recalculateBufferSize(); // Default size to determine initial chunk size
+    size_t chunkSize = adjustBufferSize(); // Default size to determine initial chunk size
     buffer.clear();
     buffer.resize(chunkSize);
     bytes_sent = 0;
-
+    double previousSentTime = 0.0;
     while (totalBytestoSend != totalBytesSents)
     {
+        size_t currentBufferSize = buffer.size();
         file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE);
 
-        size_t currentBufferSize = buffer.size();
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
 
-        chunkSize = recalculateBufferSize(transferRate, currentBufferSize);
+        chunkSize = adjustBufferSize(transferRate, previousSentTime, currentBufferSize);
 
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
@@ -312,6 +302,8 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         size_t bytes_to_send = file.gcount() + HEADER_SIZE;
         bytes_sent = 0;
         retries = 0;
+        auto startsendTime = std::chrono::steady_clock::now();
+
         for (retries = 0; retries < MAX_RETRIES; retries++)
         {
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
@@ -335,6 +327,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                 std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
             }
         }
+        previousSentTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startsendTime).count();
 
         if (retries == MAX_RETRIES)
         {
