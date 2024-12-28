@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstring>
 #include <ctype.h> // For isdigit
+#include <cctype>
 #include <fcntl.h>
 #include <fstream>
 #include <getopt.h>
@@ -19,9 +20,10 @@
 #define UDP_PORT 12345
 #define TCP_PORT 12346
 #define SERVER_ADDR "127.0.0.1"
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE 8096
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
+#define HEADER_SIZE 16
 
 template <typename T>
 T my_min(T a, T b)
@@ -29,8 +31,66 @@ T my_min(T a, T b)
     return (a < b) ? a : b;
 }
 
+template <typename T>
+T my_max(T a, T b)
+{
+    return (a > b) ? a : b;
+}
+
 int udp_socket = -1;
 int tcp_socket = -1;
+
+#include <iostream>
+#include <vector>
+#include <iomanip> // For std::hex, std::setw, and std::setfill
+
+void hexDump(const std::vector<char> &buffer)
+{
+    const size_t bytesPerLine = 16; // Nombre d'octets par ligne
+
+    for (size_t i = 0; i < buffer.size(); i += bytesPerLine)
+    {
+        // Afficher l'offset
+        std::cout << std::setw(8) << std::setfill('0') << std::hex << i << ": ";
+
+        // Afficher les octets en hexadécimal
+        for (size_t j = 0; j < bytesPerLine; ++j)
+        {
+            if (i + j < buffer.size())
+            {
+                unsigned char byte = static_cast<unsigned char>(buffer[i + j]);
+                std::cout << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(byte) << " ";
+            }
+            else
+            {
+                std::cout << "   "; // Espace pour les octets manquants
+            }
+        }
+
+        // Afficher les caractères ASCII
+        std::cout << "| ";
+        for (size_t j = 0; j < bytesPerLine; ++j)
+        {
+            if (i + j < buffer.size())
+            {
+                unsigned char byte = static_cast<unsigned char>(buffer[i + j]);
+                if (std::isprint(byte))
+                {
+                    std::cout << static_cast<char>(byte);
+                }
+                else
+                {
+                    std::cout << '.';
+                }
+            }
+            else
+            {
+                std::cout << ' '; // Espace pour les octets manquants
+            }
+        }
+        std::cout << std::endl;
+    }
+}
 
 void showUsage()
 {
@@ -143,11 +203,15 @@ bool compressChunk(const std::vector<char> &input, std::vector<char> &output, bo
 
 size_t calculateDynamicBufferSize(double transferRate)
 {
-    // For example, use transfer rate (in KB/s) to adjust buffer size
-    size_t dynamicChunkSize = static_cast<size_t>(transferRate * 1024);      // Buffer size based on transfer rate in bytes
-    dynamicChunkSize = my_min(dynamicChunkSize, static_cast<size_t>(50000)); // Cast 50000 to size_t
-    return dynamicChunkSize > 20000 ? dynamicChunkSize : 8096;
+    // Calcul de la taille du buffer dynamique basée sur la vitesse de transfert (en KB/s)
+    size_t dynamicChunkSize = static_cast<size_t>(transferRate * 1024);      // Taille du buffer en bytes
+    dynamicChunkSize = my_min(dynamicChunkSize, static_cast<size_t>(50000)); // Limite supérieure à 50000 bytes
+        std::cout << "\nspeed is: " << transferRate << std::endl;
+
+    // Si la taille calculée est inférieure à BUFFER_SIZE, on retourne BUFFER_SIZE comme taille minimale
+    return my_max(dynamicChunkSize, static_cast<size_t>(BUFFER_SIZE));
 }
+
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
 void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
@@ -222,18 +286,23 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     auto startTime = std::chrono::steady_clock::now();
     // Dynamically allocate an initial buffer
     size_t chunkSize = calculateDynamicBufferSize(0); // Default size to determine initial chunk size
-    while (file.read(buffer.data() + sizeof(int) * 2, buffer.size() - sizeof(int) * 2) || file.gcount() > 0)
+    buffer.clear();
+    buffer.resize(chunkSize);
+    bytes_sent = 0;
+    while (file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE))
     {
+        // hexDump(buffer);
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
 
         chunkSize = calculateDynamicBufferSize(transferRate);
+        std::cout << "\nChunksize is: " << chunkSize << std::endl;
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
         *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = buffer.size();
 
-        size_t bytes_to_send = file.gcount() + sizeof(int);
-        ssize_t bytes_sent = 0;
+        size_t bytes_to_send = file.gcount() + HEADER_SIZE;
+        bytes_sent = 0;
         retries = 0;
         for (retries = 0; retries < MAX_RETRIES; retries++)
         {
@@ -259,13 +328,13 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             }
         }
 
-        if (retries == MAX_RETRIES - 1)
+        if (retries == MAX_RETRIES)
         {
             std::cerr << "Échec de la réception de la confirmation pour le paquet #" << packet_number << " après " << MAX_RETRIES << " tentatives" << std::endl;
             break;
         }
 
-        totalBytesSents += bytes_to_send - sizeof(int);
+        totalBytesSents += file.gcount();
         showProgress(totalBytesSents, totalBytestoSend, elapsedTime);
         buffer.resize(chunkSize);
     }

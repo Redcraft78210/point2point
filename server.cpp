@@ -12,7 +12,7 @@
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE 8096
 #define OUTPUT_FILE "received_file.txt"
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives pour chaque confirmation TCP
@@ -65,6 +65,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             // Extraire le numéro de séquence du paquet
             int seq_num = *reinterpret_cast<int *>(buffer.data());
             next_buffer_size = *reinterpret_cast<int *>(buffer.data() + sizeof(int));
+            std::cout << next_buffer_size << std::endl;
 
             // std::cout << "next_buffer_size" << next_buffer_size << std::endl;
             // Si le signal de fin est reçu, terminer l'envoi
@@ -136,7 +137,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             {
                 std::cout << "Paquet déjà reçu, ignoré : #" << seq_num << std::endl;
             }
-
             buffer.resize(next_buffer_size);
         }
     }
