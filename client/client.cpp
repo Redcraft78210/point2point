@@ -1,18 +1,22 @@
+
+#include "MurmurHash3.h" // Include MurmurHash3 header
 #include <arpa/inet.h>
+#include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <ctype.h> // For isdigit
-#include <cctype>
 #include <fcntl.h>
 #include <fstream>
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
 #include <signal.h>
+#include <sstream>
 #include <string.h>
 #include <sys/socket.h>
-#include <thread>
 #include <sys/time.h> // Pour struct timeval
+#include <thread>
 #include <unistd.h>
 #include <vector>
 #include <zlib.h>
@@ -20,12 +24,18 @@
 #define UDP_PORT 12345
 #define TCP_PORT 12346
 #define SERVER_ADDR "127.0.0.1"
+
+#define HEADER_SIZE 8
+#define FOOTER_SIZE 4
+
+#define ACK_SIZE 64
+#define METADATA_SIZE 256
 #define BUFFER_SIZE 8096
 #define MIN_BUFFER_SIZE 8096
 #define MAX_BUFFER_SIZE 60000
+
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
-#define HEADER_SIZE 8
 
 #define ALPHA 0.3 // DEFAULT= 0.9
 #define BETA 0.2  // DEFAULT = 0.3
@@ -40,7 +50,7 @@ void hexDump(const std::vector<char> &buffer)
     for (size_t i = 0; i < buffer.size(); i += bytesPerLine)
     {
         // Afficher l'offset
-        std::cout << std::setw(8) << std::setfill('0') << std::hex << i << ": ";
+        std::cerr << std::setw(8) << std::setfill('0') << std::hex << i << ": ";
 
         // Afficher les octets en hexadécimal
         for (size_t j = 0; j < bytesPerLine; ++j)
@@ -48,16 +58,16 @@ void hexDump(const std::vector<char> &buffer)
             if (i + j < buffer.size())
             {
                 unsigned char byte = static_cast<unsigned char>(buffer[i + j]);
-                std::cout << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(byte) << " ";
+                std::cerr << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(byte) << " ";
             }
             else
             {
-                std::cout << "   "; // Espace pour les octets manquants
+                std::cerr << "   "; // Espace pour les octets manquants
             }
         }
 
         // Afficher les caractères ASCII
-        std::cout << "| ";
+        std::cerr << "| ";
         for (size_t j = 0; j < bytesPerLine; ++j)
         {
             if (i + j < buffer.size())
@@ -65,21 +75,21 @@ void hexDump(const std::vector<char> &buffer)
                 unsigned char byte = static_cast<unsigned char>(buffer[i + j]);
                 if (std::isprint(byte))
                 {
-                    std::cout << static_cast<char>(byte);
+                    std::cerr << static_cast<char>(byte);
                 }
                 else
                 {
-                    std::cout << '.';
+                    std::cerr << '.';
                 }
             }
             else
             {
-                std::cout << ' '; // Espace pour les octets manquants
+                std::cerr << ' '; // Espace pour les octets manquants
             }
         }
-        std::cout << std::endl;
+        std::cerr << std::endl;
     }
-    std::cout << std::dec << std::endl;
+    std::cerr << std::dec << std::endl;
 }
 
 void showUsage()
@@ -124,7 +134,7 @@ void test1(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en local
     serverIP = "127.0.0.1";
-    filePath = "data_to_send/fichier_binaire_1G.bin";
+    filePath = "data_to_send/fichier_binaire_512M.bin";
 }
 void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
@@ -141,11 +151,44 @@ void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 void test4(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test4()\n"); }
 void test5(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test5()\n"); }
 
+// Fonction pour calculer le hash MurmurHash3 d'un tampon
+uint32_t calculate_murmurhash3(const std::vector<char> &buffer, uint32_t seed = 0)
+{
+    uint32_t hash = 0;
+    MurmurHash3_x86_32(buffer.data(), buffer.size(), seed, &hash);
+    return hash;
+}
+
+// Fonction pour calculer le hash et l'ajouter à la fin du tampon
+std::string murmurhash_addition(std::vector<char> &buffer)
+{
+    // Calculer le MurmurHash3 du tampon
+    uint32_t hash = calculate_murmurhash3(buffer);
+
+    // Obtenir un pointeur sur les octets du hash en utilisant reinterpret_cast
+    const char *hash_bytes = reinterpret_cast<const char *>(&hash);
+
+    // Remplacer les 4 derniers octets par les octets du hash (format little-endian)
+    buffer[buffer.size() - 4] = hash_bytes[0];
+    buffer[buffer.size() - 3] = hash_bytes[1];
+    buffer[buffer.size() - 2] = hash_bytes[2];
+    buffer[buffer.size() - 1] = hash_bytes[3];
+
+    // Créer une chaîne hexadécimale des octets du hash
+    std::stringstream ss;
+    for (int i = 0; i < 4; ++i)
+    {
+        ss << std::setw(2) << std::setfill('0') << std::hex << (0xFF & static_cast<unsigned char>(hash_bytes[i]));
+    }
+
+    return ss.str();
+}
+
 void showProgress(size_t bytesSent, size_t totalBytes, const std::chrono::steady_clock::time_point &startTime, double elapsedTime)
 {
     int progress = static_cast<int>((bytesSent * 100) / totalBytes);
     double originalTransferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
-    double transferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
+    double transferRate = (bytesSent / 1024.0) / elapsedTime;         // KB/s
 
     // Convertir le taux de transfert en fonction de sa taille
     std::string rateUnit = "KB/s";
@@ -224,6 +267,29 @@ double adjustBufferSize(double currentSpeed = 0, double previousTime = 0, size_t
     return newBufferSize;
 }
 
+bool resendMetadata(int udp_socket, const std::vector<char> &buffer, size_t metadata_size,
+                    const struct sockaddr_in &server_addr, socklen_t server_len,
+                    int max_attempts = 5)
+{
+    int send_attempts = 0;
+    while (send_attempts < max_attempts)
+    {
+        if (sendto(udp_socket, buffer.data(), metadata_size, 0, (struct sockaddr *)&server_addr, server_len) >= 0)
+        {
+            // Successfully sent the metadata
+            return true;
+        }
+
+        std::cerr << "Erreur d'envoi du nom de fichier, tentative " << (send_attempts + 1) << " de " << max_attempts << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Wait before retrying
+        ++send_attempts;
+    }
+
+    // Failed to send after max_attempts
+    std::cerr << "Échec du renvoi du nom de fichier après " << max_attempts << " tentatives" << std::endl;
+    return false;
+}
+
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
 void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
 {
@@ -246,7 +312,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         return;
     }
 
-    std::vector<char> buffer(BUFFER_SIZE);
+    std::vector<char> buffer(METADATA_SIZE);
     socklen_t server_len = sizeof(server_addr);
     int packet_number = 0;
     size_t totalBytesSents = 0;
@@ -259,52 +325,75 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     std::string file_name = std::string(file_path).substr(std::string(file_path).find_last_of("/\\") + 1);
     size_t name_length = file_name.size();
 
-    if (name_length >= BUFFER_SIZE - sizeof(int))
+    if (name_length >= METADATA_SIZE - sizeof(int) - FOOTER_SIZE)
     {
         std::cerr << "Nom de fichier trop long pour être transmis" << std::endl;
         return;
     }
 
     *reinterpret_cast<int *>(buffer.data()) = 0; // Special packet for file name
-    std::memcpy(buffer.data() + sizeof(int), file_name.data(), file_name.size());
-
-    ssize_t bytes_sent = sendto(udp_socket, buffer.data(), sizeof(int) + file_name.size(), 0, (struct sockaddr *)&server_addr, server_len);
-    if (bytes_sent < 0)
+    *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = BUFFER_SIZE;
+    std::memcpy(buffer.data() + HEADER_SIZE, file_name.data(), file_name.size());
+    std::string checksum = murmurhash_addition(buffer);
+    while (sendto(udp_socket, buffer.data(), METADATA_SIZE, 0, (struct sockaddr *)&server_addr, server_len) < 0)
     {
         std::cerr << "Erreur d'envoi du nom de fichier" << std::endl;
-        return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
     }
 
-    // Attendre la confirmation pour le nom de fichier
-    int ack_seq_num;
     ulong retries = 0;
 
     for (retries = 0; retries < MAX_RETRIES; retries++)
     {
-
-        if (recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0) > 0 && ack_seq_num == 0)
+        std::vector<char> ack_buffer(ACK_SIZE);
+        ssize_t n = recv(tcp_socket, ack_buffer.data(), ACK_SIZE, 0);
+        if (n > 0)
         {
-            break;
+            try
+            {
+                int received_packet_number = std::stoi(std::string(ack_buffer.data(), n));
+                if (received_packet_number == packet_number)
+                {
+                    // std::cout << "ACK correct reçu pour le paquet #" << packet_number << std::endl;
+                    break;
+                }
+            }
+            catch (const std::invalid_argument &)
+            {
+                std::cerr << "Erreur de conversion de l'ACK en entier." << std::endl;
+            }
+
+            if (std::string(ack_buffer.data(), n) == "INCORRECT CRC")
+            {
+                std::cerr << "CRC incorrect pour le paquet #" << packet_number << ", tentative " << retries << std::endl;
+                if (!resendMetadata(udp_socket, buffer, METADATA_SIZE, server_addr, server_len))
+                {
+                    std::cerr << "Échec du renvoi du nom de fichier après CRC incorrect" << std::endl;
+                    return;
+                }
+                continue; // Skip the sleep and retry immediately
+            }
         }
-        std::cerr << "\nErreur de confirmation pour le nom de fichier, tentative " << retries + 1 << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
     }
-    if (retries == MAX_RETRIES - 1)
+
+    if (retries == MAX_RETRIES)
     {
         std::cerr << "Échec de la confirmation du nom de fichier" << std::endl;
         return;
     }
+
     auto startTime = std::chrono::steady_clock::now();
     // Dynamically allocate an initial buffer
     size_t chunkSize = adjustBufferSize(); // Default size to determine initial chunk size
     buffer.clear();
     buffer.resize(chunkSize);
-    bytes_sent = 0;
+    ssize_t bytes_sent = 0;
     double previousSentTime = 0.0;
     while (totalBytestoSend != totalBytesSents)
     {
         size_t currentBufferSize = buffer.size();
-        file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE);
+        file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE - FOOTER_SIZE);
 
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
@@ -314,14 +403,23 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
         *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = chunkSize;
+        size_t bytes_to_send = file.gcount() + HEADER_SIZE + FOOTER_SIZE;
 
-        size_t bytes_to_send = file.gcount() + HEADER_SIZE;
+        if (bytes_to_send < 60000)
+        {
+            buffer.resize(bytes_to_send);
+        }
+
+        std::string checksum = murmurhash_addition(buffer);
         bytes_sent = 0;
         retries = 0;
         auto startsendTime = std::chrono::steady_clock::now();
-
         for (retries = 0; retries < MAX_RETRIES; retries++)
         {
+            if (retries != 0)
+            {
+                hexDump(buffer);
+            }
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
             if (bytes_sent < 0)
             {
@@ -330,18 +428,41 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                 continue;
             }
 
-            // Attente de la confirmation via TCP (ACK)
-            int ack_seq_num;
-            ssize_t n = recv(tcp_socket, &ack_seq_num, sizeof(ack_seq_num), 0);
-            if (n > 0 && ack_seq_num == packet_number)
+            std::vector<char> ack_buffer(ACK_SIZE);
+            ssize_t n = recv(tcp_socket, ack_buffer.data(), ACK_SIZE, 0);
+            if (n > 0)
             {
-                break; // ACK correct reçu
+                // Case 1: ACK is correct (ack_buffer contains the packet number)
+                try
+                {
+                    // Try converting the received buffer to an integer
+                    int received_packet_number = std::stoi(std::string(ack_buffer.data(), n)); // Use only valid bytes
+                    if (received_packet_number == packet_number)
+                    {
+                        // std::cout << "ACK correct reçu pour le paquet #" << packet_number << std::endl;
+                        break; // ACK correct reçu, exit the loop
+                    }
+                }
+                catch (const std::invalid_argument &)
+                {
+                    // Case 2: Received message indicates "INCORRECT CRC"
+                    if (std::string(ack_buffer.data(), n) == "INCORRECT CRC")
+                    {
+                        std::cerr << "\nCRC incorrect (!=" << checksum << ") pour le paquet #" << packet_number << ", tentative " << retries << std::endl;
+                        // You can handle the "INCORRECT CRC" case here, like retrying or other logic
+                        // For now, we just log and retry
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                        continue;
+                    }
+                }
             }
             else
             {
-                std::cerr << "\nConfirmation incorrecte ou échec de réception pour le paquet #" << packet_number << ", tentative " << retries + 1 << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                // Error or no data received, possibly retrying
+                std::cerr << "Erreur de réception de l'ACK pour le paquet #" << packet_number << ", tentative " << retries << std::endl;
             }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
         }
         previousSentTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startsendTime).count();
 
@@ -353,10 +474,11 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
 
         totalBytesSents += file.gcount();
         showProgress(totalBytesSents, totalBytestoSend, startTime, elapsedTime);
+        buffer.clear();
         buffer.resize(chunkSize);
     }
 
-    if (file.eof() && totalBytestoSend == totalBytesSents)
+    if (totalBytestoSend == totalBytesSents)
     {
         buffer.resize(sizeof(int)); // Assurez-vous que le buffer est de taille suffisante pour contenir un int
         *reinterpret_cast<int *>(buffer.data()) = END_SIGNAL;

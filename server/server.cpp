@@ -2,7 +2,8 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
-#include <iomanip> // For std::hex, std::setw, and std::setfill
+#include "MurmurHash3.h" // Include MurmurHash3 header
+#include <iomanip>       // For std::hex, std::setw, and std::setfill
 #include <iostream>
 #include <set>
 #include <signal.h>
@@ -14,8 +15,10 @@
 #define UDP_PORT 12345
 #define TCP_PORT 12346
 
+#define METADATA_SIZE 256
 #define BUFFER_SIZE 8096
 #define HEADER_SIZE 8
+#define FOOTER_SIZE 4
 
 #define OUTPUT_FILE "received_file.txt"
 #define END_SIGNAL -1  // Signal de fin
@@ -98,12 +101,20 @@ void hexDump(const std::vector<char> &buffer)
     std::cout << std::dec << std::endl;
 }
 
+// Fonction pour calculer le hash MurmurHash3 d'un tampon
+uint32_t calculate_murmurhash3(const std::vector<char> &buffer, uint32_t seed = 0)
+{
+    uint32_t hash = 0;
+    MurmurHash3_x86_32(buffer.data(), buffer.size(), seed, &hash);
+    return hash;
+}
+
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
 void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 {
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
-    std::vector<char> buffer(BUFFER_SIZE);
+    std::vector<char> buffer(256);
     std::string file_name;
     int next_buffer_size;
     // Set pour suivre les numéros de séquence des paquets reçus
@@ -118,6 +129,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             // Extraire le numéro de séquence du paquet
             int seq_num = *reinterpret_cast<int *>(buffer.data());
             next_buffer_size = *reinterpret_cast<int *>(buffer.data() + sizeof(int));
+            buffer.resize(n);
+            std::vector<char> buffer_bak(buffer);
 
             // Si le signal de fin est reçu, terminer l'envoi
             if (seq_num == END_SIGNAL)
@@ -130,27 +143,74 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             switch (seq_num)
             {
             case 0:
-                // Si c'est le premier paquet (nom du fichier)
-                if (seq_num == 0)
+                // Extract the file name and checksum
+                std::string file_name(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
+                std::vector<unsigned char> last_4_bytes(buffer.begin() + METADATA_SIZE - 4, buffer.end());
+
+                // Réinitialiser les 4 derniers octets à 0
+                for (int i = 0; i < 4; ++i)
                 {
-                    file_name = std::string(buffer.data() + sizeof(int), n - sizeof(int));
-                    std::cout << "Nom du fichier reçu : " << file_name << std::endl;
-
-                    // Ouvrir le fichier pour écrire les données
-                    output_file = fopen(file_name.c_str(), "wb");
-                    if (!output_file)
-                    {
-                        std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
-                        return;
-                    }
-
-                    // Envoyer une confirmation pour le nom du fichier
-                    send(tcp_socket, &seq_num, sizeof(seq_num), 0);
-                    continue;
+                    buffer[buffer.size() - 1 - i] = 0;
                 }
-                break;
-            default:
-                break;
+
+                // // Compute the checksum
+                uint32_t calculated_checksum = calculate_murmurhash3(buffer);
+
+                // Convert last 4 bytes to uint32_t (checksum)
+                uint32_t checksum = 0;
+                for (size_t i = 0; i < 4; ++i)
+                {
+                    checksum |= (last_4_bytes[i] << (8 * i)); // Little-endian order
+                }
+
+                // Envoyer la confirmation via TCP avec ré-essai
+                int retries = 0;
+                bool ack_sent = false;
+
+                std::string message = "INCORRECT CRC";
+
+                if (checksum == calculated_checksum)
+                {
+                    std::cout << "\nNom du fichier reçu : " << file_name << std::endl;
+                    message = std::to_string(seq_num);
+                }
+                else
+                {
+                    std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
+                }
+
+                // Envoyer une confirmation pour le nom du fichier
+                while (retries < MAX_RETRIES && !ack_sent)
+                {
+                    ssize_t bytes_sent = send(tcp_socket, message.c_str(), message.length(), 0);
+
+                    if (bytes_sent > 0)
+                    {
+                        ack_sent = true;
+                        std::cout << "\nConfirmation TCP envoyée pour le nom de fichier" << std::endl;
+                    }
+                    else
+                    {
+                        retries++; // Increment retries on failure
+                        std::cerr << "Failed to send TCP confirmation, retrying (" << retries << "/" << MAX_RETRIES << ")" << std::endl;
+                    }
+                }
+
+                if (!ack_sent)
+                {
+                    std::cerr << "Failed to send TCP confirmation after " << MAX_RETRIES << " retries." << std::endl;
+                    return;
+                }
+
+                // Ouvrir le fichier pour écrire les données
+                output_file = fopen(file_name.c_str(), "wb");
+                if (!output_file)
+                {
+                    std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
+                    return;
+                }
+                buffer.resize(BUFFER_SIZE);
+                continue;
             }
 
             // Vérifier si le fichier est correctement ouvert
@@ -163,16 +223,50 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             // Si ce paquet n'a pas encore été reçu, l'ajouter et écrire dans le fichier
             if (received_sequence_numbers.find(seq_num) == received_sequence_numbers.end())
             {
-                received_sequence_numbers.insert(seq_num);
-                fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE, output_file);
-                std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
+                std::vector<unsigned char> last_4_bytes(buffer.begin() + buffer.size() - 4, buffer.end());
+
+                // Réinitialiser les 4 derniers octets à 0
+                for (int i = 0; i < 4; ++i)
+                {
+                    buffer[buffer.size() - 1 - i] = 0;
+                }
+                // // Compute the checksum
+                uint32_t calculated_checksum = calculate_murmurhash3(buffer);
+
+                // Convert last 4 bytes to uint32_t (checksum)
+                uint32_t checksum = 0;
+                for (size_t i = 0; i < 4; ++i)
+                {
+                    checksum |= (last_4_bytes[i] << (8 * i)); // Little-endian order
+                }
+
+                std::string message = "INCORRECT CRC";
+
+                if (checksum == calculated_checksum)
+                {
+                    received_sequence_numbers.insert(seq_num);
+                    fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE, output_file);
+                    std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
+                    message = std::to_string(seq_num);
+                }
+                else
+                {
+                    hexDump(buffer_bak);
+                    hexDump(buffer);
+                    std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
+                    std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
+                    std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
+                }
 
                 // Envoyer la confirmation via TCP avec ré-essai
                 int retries = 0;
                 bool ack_sent = false;
+
+                // Envoyer une confirmation pour le nom du fichier
                 while (retries < MAX_RETRIES && !ack_sent)
                 {
-                    ssize_t bytes_sent = send(tcp_socket, &seq_num, sizeof(seq_num), 0);
+                    ssize_t bytes_sent = send(tcp_socket, message.c_str(), message.length(), 0);
+
                     if (bytes_sent > 0)
                     {
                         ack_sent = true;
@@ -180,23 +274,29 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     }
                     else
                     {
-                        retries++;
+                        retries++; // Increment retries on failure
                         std::cerr << "Échec d'envoi de la confirmation TCP pour le paquet #" << seq_num << ", tentative " << retries << std::endl;
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Attendre avant de réessayer
                     }
                 }
 
-                if (retries == MAX_RETRIES)
+                if (!ack_sent)
                 {
-                    std::cerr << "Impossible d'envoyer la confirmation TCP pour le paquet #" << seq_num << " après " << MAX_RETRIES << " tentatives." << std::endl;
+                    std::cerr << "Failed to send TCP confirmation after " << MAX_RETRIES << " retries." << std::endl;
+                    return;
+                }
+
+                if (checksum != calculated_checksum)
+                {
+                    continue;
                 }
             }
             else
             {
                 std::cout << "Paquet déjà reçu, ignoré : #" << seq_num << std::endl;
             }
-            buffer.resize(next_buffer_size);
         }
+        buffer.clear();
+        buffer.resize(next_buffer_size);
     }
 
     // Fermeture du fichier après l'écriture
