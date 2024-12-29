@@ -27,8 +27,8 @@
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
 #define HEADER_SIZE 8
 
-#define ALPHA 0.5
-#define BETA 0.3
+#define ALPHA 0.3 // DEFAULT= 0.9
+#define BETA 0.2  // DEFAULT = 0.3
 
 int udp_socket = -1;
 int tcp_socket = -1;
@@ -130,7 +130,7 @@ void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en distant
     filePath = "data_to_send/fichier_binaire_1G.bin";
-    serverIP = "192.168.1.240";
+    serverIP = "10.42.0.1";
 }
 void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
@@ -141,25 +141,39 @@ void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 void test4(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test4()\n"); }
 void test5(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test5()\n"); }
 
-void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
+void showProgress(size_t bytesSent, size_t totalBytes, const std::chrono::steady_clock::time_point &startTime, double elapsedTime)
 {
     int progress = static_cast<int>((bytesSent * 100) / totalBytes);
-    double transferRate = (bytesSent / 1024.0) / elapsedTime; // Ko/s
+    double originalTransferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
+    double transferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
 
     // Convertir le taux de transfert en fonction de sa taille
     std::string rateUnit = "KB/s";
     if (transferRate >= 1024)
     {
-        transferRate /= 1024; // Convertir en Mo/s
+        transferRate /= 1024; // Convertir en MB/s
         rateUnit = "MB/s";
     }
     if (transferRate >= 1024)
     {
-        transferRate /= 1024; // Convertir en Go/s
+        transferRate /= 1024; // Convertir en GB/s
         rateUnit = "GB/s";
     }
+    // Calculer le temps écoulé
+    auto now = std::chrono::steady_clock::now();
+    double elapsedSeconds = std::chrono::duration<double>(now - startTime).count();
 
-    // Affichage du progrès et du taux de transfert
+    // Calculer le temps restant estimé (en secondes)
+    double remainingBytes = totalBytes - bytesSent;
+    double leftTime = (originalTransferRate > 0) ? (remainingBytes / 1024.0) / originalTransferRate : 0; // en secondes
+    // Formatage du temps écoulé et du temps restant
+    int elapsedMinutes = static_cast<int>(elapsedSeconds) / 60;
+    int elapsedSecondsInt = static_cast<int>(elapsedSeconds) % 60;
+
+    int leftMinutes = static_cast<int>(leftTime) / 60;
+    int leftSeconds = static_cast<int>(leftTime) % 60;
+
+    // Affichage du progrès, du taux de transfert, du temps écoulé et du temps restant
     std::cout << "\rProgress: [";
     for (int i = 0; i < 50; i++)
     {
@@ -170,7 +184,9 @@ void showProgress(size_t bytesSent, size_t totalBytes, double elapsedTime)
     }
     std::cout << "] " << progress << "%  Rate: "
               << std::fixed << std::setprecision(2) // Limite à 2 décimales
-              << transferRate << " " << rateUnit;
+              << transferRate << " " << rateUnit
+              << " | Elapsed: " << elapsedMinutes << "m " << elapsedSecondsInt << "s"
+              << " | Left: " << leftMinutes << "m " << leftSeconds << "s";
 
     std::flush(std::cout);
 }
@@ -336,7 +352,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         }
 
         totalBytesSents += file.gcount();
-        showProgress(totalBytesSents, totalBytestoSend, elapsedTime);
+        showProgress(totalBytesSents, totalBytestoSend, startTime, elapsedTime);
         buffer.resize(chunkSize);
     }
 
