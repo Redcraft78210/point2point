@@ -37,8 +37,8 @@
 #define END_SIGNAL -1  // Signal de fin
 #define MAX_RETRIES 20 // Nombre de tentatives de ré-essai pour chaque paquet
 
-#define ALPHA 0.3 // DEFAULT= 0.9
-#define BETA 0.2  // DEFAULT = 0.3
+#define ALPHA 0.5 // DEFAULT= 0.9
+#define BETA 0.5  // DEFAULT = 0.3
 
 int udp_socket = -1;
 int tcp_socket = -1;
@@ -140,7 +140,7 @@ void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en distant
     filePath = "data_to_send/large_file.txt";
-    serverIP = "10.42.0.1";
+    serverIP = "192.168.1.240";
 }
 void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
