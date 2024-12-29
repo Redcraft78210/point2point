@@ -139,7 +139,7 @@ void test1(std::string &filePath, std::string &serverIP, bool &compressFlag)
 void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en distant
-    filePath = "data_to_send/fichier_binaire_1G.bin";
+    filePath = "data_to_send/large_file.txt";
     serverIP = "10.42.0.1";
 }
 void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)

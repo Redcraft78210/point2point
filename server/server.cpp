@@ -245,14 +245,12 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 if (checksum == calculated_checksum)
                 {
                     received_sequence_numbers.insert(seq_num);
-                    fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE, output_file);
+                    fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE - FOOTER_SIZE, output_file);
                     std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
                     message = std::to_string(seq_num);
                 }
                 else
                 {
-                    hexDump(buffer_bak);
-                    hexDump(buffer);
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
                     std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
