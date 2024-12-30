@@ -241,39 +241,52 @@ void showProgress(size_t bytesSent, size_t totalBytes, const std::chrono::steady
 
 bool compressChunk(std::vector<char> &buffer, bool verbose = false)
 {
-    if (buffer.size() <= HEADER_SIZE)
-    {
-        if (verbose)
-        {
-            std::cerr << "Buffer is too small to have a valid offset." << std::endl;
-        }
-        return false;
-    }
-
-    // Pointeur sur les données à partir de l'offset HEADER_SIZE dans buffer
+    /// Pointeur sur les données à partir de l'offset HEADER_SIZE dans buffer
     std::vector<char>::iterator dataStart = buffer.begin() + HEADER_SIZE;
-    size_t dataSize = buffer.size() - HEADER_SIZE;
+    size_t dataSize = buffer.size() - HEADER_SIZE - FOOTER_SIZE;
 
-    uLongf compressedSize = compressBound(dataSize); // Taille maximale compressée
-    buffer.resize(HEADER_SIZE + compressedSize);     // Redimensionner pour l'offset + données compressées
+    // Calcul de la taille maximale compressée
+    uLongf compressedSize = compressBound(dataSize);
+    std::vector<char> tempBuffer(HEADER_SIZE + compressedSize); // Tampon temporaire
 
-    // Compression des données sans l'offset, mais en utilisant buffer pour l'espace compressé
-    int result = compress2(reinterpret_cast<Bytef *>(buffer.data() + HEADER_SIZE), &compressedSize,
-                           reinterpret_cast<const Bytef *>(&*dataStart), dataSize, Z_BEST_COMPRESSION);
+    try
+    {
+        // Compression des données dans le tampon temporaire
+        int result = compress2(reinterpret_cast<Bytef *>(tempBuffer.data() + HEADER_SIZE), &compressedSize,
+                               reinterpret_cast<const Bytef *>(&*dataStart), dataSize, Z_BEST_COMPRESSION);
 
-    if (result != Z_OK)
+        // Vérification du résultat de la compression
+        if (result != Z_OK)
+        {
+            if (verbose)
+            {
+                std::cerr << "Compression failed with error code: " << result << std::endl;
+            }
+            return false;
+        }
+
+        // Ajustement de la taille du tampon temporaire pour inclure uniquement les données compressées et les en-têtes
+        tempBuffer.resize(HEADER_SIZE + compressedSize + FOOTER_SIZE);
+
+        // Nettoyage du buffer d'origine et copie des données du tampon temporaire
+        buffer.clear();
+        buffer.insert(buffer.end(), tempBuffer.begin(), tempBuffer.end());
+
+        if (verbose)
+        {
+            std::cout << "Compression succeeded. Final buffer size: " << buffer.size() << std::endl;
+        }
+
+        return true;
+    }
+    catch (const std::bad_alloc &e)
     {
         if (verbose)
         {
-            std::cerr << "Compression failed with error code: " << result << std::endl;
+            std::cerr << "Memory allocation failed: " << e.what() << std::endl;
         }
         return false;
     }
-
-    // Ajuster la taille du buffer pour inclure uniquement les données compressées (l'offset reste intact)
-    buffer.resize(HEADER_SIZE + compressedSize);
-
-    return true;
 }
 
 // Fonction pour ajuster la taille du buffer
@@ -420,35 +433,32 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     {
         size_t currentBufferSize = buffer.size();
         file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE - FOOTER_SIZE);
+        buffer.resize(file.gcount() + HEADER_SIZE + FOOTER_SIZE);
 
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
 
         chunkSize = adjustBufferSize(transferRate, previousSentTime, currentBufferSize);
+
         if (compressFlag)
             compressChunk(buffer);
-        hexDump(buffer);
+
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
         *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = chunkSize;
-        size_t bytes_to_send = file.gcount() + HEADER_SIZE + FOOTER_SIZE;
+        size_t bytes_to_send = buffer.size();
 
-        if (bytes_to_send < 60000)
-        {
-            buffer.resize(bytes_to_send);
-        }
-
+        // std::cout << std::dec << buffer.size() << std::endl;
         std::string checksum = murmurhash_addition(buffer);
         bytes_sent = 0;
         retries = 0;
         auto startsendTime = std::chrono::steady_clock::now();
         for (retries = 0; retries < MAX_RETRIES; retries++)
         {
-            // if (retries != 0)
-            // {
-            //     hexDump(buffer);
-            // }
-            hexDump(buffer);
+            if (retries != 0)
+            {
+                hexDump(buffer);
+            }
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
             if (bytes_sent < 0)
             {

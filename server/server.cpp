@@ -128,7 +128,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
         {
             // Extraire le numéro de séquence du paquet
             int seq_num = *reinterpret_cast<int *>(buffer.data());
-            next_buffer_size = *reinterpret_cast<int *>(buffer.data() + sizeof(int));
+            next_buffer_size = *reinterpret_cast<int *>(buffer.data() + sizeof(int)) + 1024;
             buffer.resize(n);
             std::vector<char> buffer_bak(buffer);
 
@@ -209,7 +209,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
                     return;
                 }
-                buffer.resize(BUFFER_SIZE);
+                buffer.resize(BUFFER_SIZE + 1024);
                 continue;
             }
 
@@ -230,6 +230,9 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 {
                     buffer[buffer.size() - 1 - i] = 0;
                 }
+
+                std::cout << std::dec << buffer.size() << std::endl;
+
                 // // Compute the checksum
                 uint32_t calculated_checksum = calculate_murmurhash3(buffer);
 
@@ -256,7 +259,9 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
                     std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
-                }
+                } // Log actual sequence number
+                std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
+                std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
 
                 // Envoyer la confirmation via TCP avec ré-essai
                 int retries = 0;
