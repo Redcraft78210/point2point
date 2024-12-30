@@ -144,11 +144,16 @@ void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 }
 void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
-    // Test d'un gros fichier binaire avec compression en distant
+    // Test d'un gros fichier binaire avec compression en local
     filePath = "data_to_send/fichier_binaire_1G.bin";
-    serverIP = "172.20.10.4";
+    serverIP = "127.0.0.1";
+    compressFlag = true;
 }
-void test4(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test4()\n"); }
+void test4(std::string &filePath, std::string &serverIP, bool &compressFlag)
+{ // Test d'un gros fichier binaire avec compression en distant
+    filePath = "data_to_send/fichier_binaire_1G.bin";
+    serverIP = "192.168.1.240";
+}
 void test5(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test5()\n"); }
 
 // Fonction pour calculer le hash MurmurHash3 d'un tampon
@@ -234,19 +239,40 @@ void showProgress(size_t bytesSent, size_t totalBytes, const std::chrono::steady
     std::flush(std::cout);
 }
 
-bool compressChunk(const std::vector<char> &input, std::vector<char> &output, bool verbose, size_t chunkSize)
+bool compressChunk(std::vector<char> &buffer, bool verbose = false)
 {
-    uLongf compressedSize = compressBound(input.size());
-    output.resize(compressedSize);
-
-    int result = compress2(reinterpret_cast<Bytef *>(output.data()), &compressedSize,
-                           reinterpret_cast<const Bytef *>(input.data()), input.size(), Z_BEST_COMPRESSION);
-    if (result != Z_OK)
+    if (buffer.size() <= HEADER_SIZE)
     {
+        if (verbose)
+        {
+            std::cerr << "Buffer is too small to have a valid offset." << std::endl;
+        }
         return false;
     }
 
-    output.resize(compressedSize);
+    // Pointeur sur les données à partir de l'offset HEADER_SIZE dans buffer
+    std::vector<char>::iterator dataStart = buffer.begin() + HEADER_SIZE;
+    size_t dataSize = buffer.size() - HEADER_SIZE;
+
+    uLongf compressedSize = compressBound(dataSize); // Taille maximale compressée
+    buffer.resize(HEADER_SIZE + compressedSize);     // Redimensionner pour l'offset + données compressées
+
+    // Compression des données sans l'offset, mais en utilisant buffer pour l'espace compressé
+    int result = compress2(reinterpret_cast<Bytef *>(buffer.data() + HEADER_SIZE), &compressedSize,
+                           reinterpret_cast<const Bytef *>(&*dataStart), dataSize, Z_BEST_COMPRESSION);
+
+    if (result != Z_OK)
+    {
+        if (verbose)
+        {
+            std::cerr << "Compression failed with error code: " << result << std::endl;
+        }
+        return false;
+    }
+
+    // Ajuster la taille du buffer pour inclure uniquement les données compressées (l'offset reste intact)
+    buffer.resize(HEADER_SIZE + compressedSize);
+
     return true;
 }
 
@@ -291,7 +317,7 @@ bool resendMetadata(int udp_socket, const std::vector<char> &buffer, size_t meta
 }
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
-void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket)
+void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket, bool compressFlag)
 {
 
     // Définir un délai d'attente de 15 secondes pour la réception
@@ -399,7 +425,9 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
 
         chunkSize = adjustBufferSize(transferRate, previousSentTime, currentBufferSize);
-
+        if (compressFlag)
+            compressChunk(buffer);
+        hexDump(buffer);
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
         *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = chunkSize;
@@ -416,10 +444,11 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         auto startsendTime = std::chrono::steady_clock::now();
         for (retries = 0; retries < MAX_RETRIES; retries++)
         {
-            if (retries != 0)
-            {
-                hexDump(buffer);
-            }
+            // if (retries != 0)
+            // {
+            //     hexDump(buffer);
+            // }
+            hexDump(buffer);
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
             if (bytes_sent < 0)
             {
@@ -546,7 +575,7 @@ int main(int argc, char *argv[])
                     return 1;
                 }
 
-                void (*tests[])(std::string &filePath, std::string &serverIP, bool &) = {test1, test2}; // Add other test functions
+                void (*tests[])(std::string &filePath, std::string &serverIP, bool &) = {test1, test2, test3, test4, test5}; // Add other test functions
                 if (test >= 1 && test <= 5)
                 {
                     verbose = true;
@@ -730,7 +759,7 @@ int main(int argc, char *argv[])
     }
 
     // Send the file over UDP with TCP confirmations
-    send_file_udp(udp_socket, server_addr, filePath.c_str(), tcp_socket); // You should implement this function
+    send_file_udp(udp_socket, server_addr, filePath.c_str(), tcp_socket, compressFlag); // You should implement this function
 
     // Close the sockets after sending
     close(udp_socket);

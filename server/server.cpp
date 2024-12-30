@@ -251,6 +251,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 }
                 else
                 {
+                    hexDump(buffer_bak);
+                    hexDump(buffer);
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
                     std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
