@@ -145,7 +145,7 @@ void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire avec compression en local
-    filePath = "data_to_send/fichier_binaire_1G.bin";
+    filePath = "data_to_send/large_file.txt";
     serverIP = "127.0.0.1";
     compressFlag = true;
 }
@@ -248,7 +248,6 @@ bool compressChunk(std::vector<char> &buffer, bool verbose = false)
     // Calcul de la taille maximale compressée
     uLongf compressedSize = compressBound(dataSize);
     std::vector<char> tempBuffer(HEADER_SIZE + compressedSize); // Tampon temporaire
-
     try
     {
         // Compression des données dans le tampon temporaire

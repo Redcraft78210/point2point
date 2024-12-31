@@ -112,9 +112,11 @@ uint32_t calculate_murmurhash3(const std::vector<char> &buffer, uint32_t seed = 
 
 bool decompressChunk(std::vector<char> &input, bool verbose = true)
 {
-    std::vector<char> buffer;
-    buffer.assign(HEADER_SIZE, input.size() - FOOTER_SIZE);
-    uLongf outputSize = buffer.size() * 2;
+    const char *bufferStart = input.data() + HEADER_SIZE;
+    const char *bufferEnd = input.data() + input.size() - FOOTER_SIZE;
+    size_t bufferSize = bufferEnd - bufferStart;
+
+    uLongf outputSize = bufferSize * 2;
     std::vector<char> tempBuffer(outputSize);
 
     const uLongf MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
@@ -130,16 +132,19 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
             return false;
         }
 
-        int result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
-                                reinterpret_cast<const Bytef *>(buffer.data()), buffer.size());
+        int result = uncompress(
+            reinterpret_cast<Bytef *>(tempBuffer.data()),
+            &outputSize,
+            reinterpret_cast<const Bytef *>(bufferStart),
+            bufferSize);
 
         if (result == Z_OK)
         {
             // Resize the buffer to the actual decompressed size
-            buffer.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
+            input.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
             if (verbose)
             {
-                std::cout << "Decompressed successfully. Original size: " << buffer.size()
+                std::cout << "Decompressed successfully. Original size: " << bufferSize
                           << ", Decompressed size: " << outputSize << " bytes.\n";
             }
             return true;
@@ -213,7 +218,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 }
 
                 compressFlag = static_cast<bool>(compression_status);
-
 
                 // Réinitialiser les 4 derniers octets à 0
                 for (int i = 0; i < 4; ++i)
@@ -314,7 +318,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 if (checksum == calculated_checksum)
                 {
                     message = std::to_string(seq_num);
-                    std::cout << "signed_compression_status: " << std::boolalpha << compressFlag << std::endl;
                     if (compressFlag)
                     {
 
@@ -324,9 +327,16 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                             std::cerr << "Unable to decompress packet received: #" << seq_num << std::endl; // Log actual sequence number
                             message = "FAILED DECOMPRESSION";
                         }
+                        else
+                        {
+                            fwrite(buffer.data(), 1, buffer.size(), output_file);
+                        }
+                    }
+                    else
+                    {
+                        fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE - FOOTER_SIZE, output_file);
                     }
                     received_sequence_numbers.insert(seq_num);
-                    fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE - FOOTER_SIZE, output_file);
                     std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
                 }
                 else
