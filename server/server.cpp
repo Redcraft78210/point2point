@@ -11,6 +11,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <zlib.h>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -109,6 +110,58 @@ uint32_t calculate_murmurhash3(const std::vector<char> &buffer, uint32_t seed = 
     return hash;
 }
 
+bool decompressChunk(std::vector<char> &input, bool verbose = true)
+{
+    std::vector<char> buffer;
+    buffer.assign(HEADER_SIZE, input.size() - FOOTER_SIZE);
+    uLongf outputSize = buffer.size() * 2;
+    std::vector<char> tempBuffer(outputSize);
+
+    const uLongf MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
+
+    while (true)
+    {
+        if (outputSize > MAX_BUFFER_SIZE)
+        {
+            if (verbose)
+            {
+                std::cerr << "Decompression buffer size exceeded maximum limit.\n";
+            }
+            return false;
+        }
+
+        int result = uncompress(reinterpret_cast<Bytef *>(tempBuffer.data()), &outputSize,
+                                reinterpret_cast<const Bytef *>(buffer.data()), buffer.size());
+
+        if (result == Z_OK)
+        {
+            // Resize the buffer to the actual decompressed size
+            buffer.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
+            if (verbose)
+            {
+                std::cout << "Decompressed successfully. Original size: " << buffer.size()
+                          << ", Decompressed size: " << outputSize << " bytes.\n";
+            }
+            return true;
+        }
+        else if (result == Z_BUF_ERROR)
+        {
+            // Expand the output buffer
+            outputSize *= 2;
+            tempBuffer.resize(outputSize);
+        }
+        else
+        {
+            if (verbose)
+            {
+                // Decompression error
+                std::cerr << "Decompression error: " << result << "\n";
+            }
+            return false;
+        }
+    }
+}
+
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
 void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 {
@@ -116,6 +169,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     socklen_t client_len = sizeof(client_addr);
     std::vector<char> buffer(256);
     std::string file_name;
+    bool compressFlag = false;
     int next_buffer_size;
     // Set pour suivre les numéros de séquence des paquets reçus
     std::set<int> received_sequence_numbers;
@@ -145,7 +199,21 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             case 0:
                 // Extract the file name and checksum
                 std::string file_name(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
-                std::vector<unsigned char> last_4_bytes(buffer.begin() + METADATA_SIZE - 4, buffer.end());
+                // récupérer les 4 derniers bytes avant les 4 derniers bytes, qui contiennent le checksum.
+                std::vector<unsigned char> last_4_bytes(buffer.end() - 4, buffer.end());
+
+                // récupérer les 4 derniers bytes avant les 4 derniers bytes, qui précisent si la compression est activée ou non.
+                std::vector<unsigned char> four_bytes_before_last_four_bytes(buffer.end() - 8, buffer.end() - 4);
+
+                // Convert last 4 bytes to uint32_t (checksum)
+                uint32_t compression_status = 0;
+                for (size_t i = 0; i < 4; ++i)
+                {
+                    compression_status |= (four_bytes_before_last_four_bytes[i] << (8 * i)); // Little-endian order
+                }
+
+                compressFlag = static_cast<bool>(compression_status);
+
 
                 // Réinitialiser les 4 derniers octets à 0
                 for (int i = 0; i < 4; ++i)
@@ -231,8 +299,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     buffer[buffer.size() - 1 - i] = 0;
                 }
 
-                std::cout << std::dec << buffer.size() << std::endl;
-
                 // // Compute the checksum
                 uint32_t calculated_checksum = calculate_murmurhash3(buffer);
 
@@ -247,10 +313,21 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 
                 if (checksum == calculated_checksum)
                 {
+                    message = std::to_string(seq_num);
+                    std::cout << "signed_compression_status: " << std::boolalpha << compressFlag << std::endl;
+                    if (compressFlag)
+                    {
+
+                        std::cerr << "Compress flag: #" << seq_num << std::endl; // Log actual sequence number
+                        if (!decompressChunk(buffer))
+                        {
+                            std::cerr << "Unable to decompress packet received: #" << seq_num << std::endl; // Log actual sequence number
+                            message = "FAILED DECOMPRESSION";
+                        }
+                    }
                     received_sequence_numbers.insert(seq_num);
                     fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE - FOOTER_SIZE, output_file);
                     std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
-                    message = std::to_string(seq_num);
                 }
                 else
                 {
@@ -259,9 +336,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
                     std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
-                } // Log actual sequence number
-                std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
-                std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::endl;
+                }
 
                 // Envoyer la confirmation via TCP avec ré-essai
                 int retries = 0;

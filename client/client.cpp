@@ -373,6 +373,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     *reinterpret_cast<int *>(buffer.data()) = 0; // Special packet for file name
     *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = BUFFER_SIZE;
     std::memcpy(buffer.data() + HEADER_SIZE, file_name.data(), file_name.size());
+    *reinterpret_cast<int *>(buffer.data() + buffer.size() - 2 * sizeof(int)) = compressFlag ? 1 : 0;
     std::string checksum = murmurhash_addition(buffer);
     while (sendto(udp_socket, buffer.data(), METADATA_SIZE, 0, (struct sockaddr *)&server_addr, server_len) < 0)
     {
