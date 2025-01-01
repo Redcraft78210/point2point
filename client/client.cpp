@@ -134,7 +134,7 @@ void test1(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en local
     serverIP = "127.0.0.1";
-    filePath = "data_to_send/fichier_binaire_512M.bin";
+    filePath = "data_to_send/fichier_binaire_1G.bin";
 }
 void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
 {
@@ -156,19 +156,31 @@ void test4(std::string &filePath, std::string &serverIP, bool &compressFlag)
 }
 void test5(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test5()\n"); }
 
-// Fonction pour calculer le hash MurmurHash3 d'un tampon
-uint32_t calculate_murmurhash3(const std::vector<char> &buffer, uint32_t seed = 0)
+// Function to calculate MurmurHash3 on a part of the buffer
+uint32_t calculate_murmurhash3(const std::vector<char> &buffer,
+                               int start_offset_bytes = 0,
+                               int end_offset_bytes = 0,
+                               uint32_t seed = 0)
 {
+
+    // Calculate the range to hash
+    const char *data_start = buffer.data() + start_offset_bytes;
+    int data_size = static_cast<int>(buffer.size()) - start_offset_bytes - end_offset_bytes;
+
+    // Créer un vecteur à partir de la plage spécifiée
+    std::vector<char> subvector(data_start, data_start + data_size);
+
+    // Compute the hash
     uint32_t hash = 0;
-    MurmurHash3_x86_32(buffer.data(), buffer.size(), seed, &hash);
+    MurmurHash3_x86_32(data_start, data_size, seed, &hash);
     return hash;
 }
 
 // Fonction pour calculer le hash et l'ajouter à la fin du tampon
-std::string murmurhash_addition(std::vector<char> &buffer)
+std::string murmurhash_addition(std::vector<char> &buffer, int start_offset_bytes = 0, int end_offset_bytes = 0)
 {
     // Calculer le MurmurHash3 du tampon
-    uint32_t hash = calculate_murmurhash3(buffer);
+    uint32_t hash = calculate_murmurhash3(buffer, start_offset_bytes, end_offset_bytes);
 
     // Obtenir un pointeur sur les octets du hash en utilisant reinterpret_cast
     const char *hash_bytes = reinterpret_cast<const char *>(&hash);
@@ -429,11 +441,91 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     buffer.resize(chunkSize);
     ssize_t bytes_sent = 0;
     double previousSentTime = 0.0;
+    bool is_newfile = false;
+
     while (totalBytestoSend != totalBytesSents)
     {
         size_t currentBufferSize = buffer.size();
-        file.read(buffer.data() + HEADER_SIZE, buffer.size() - HEADER_SIZE - FOOTER_SIZE);
+        file.read(buffer.data() + HEADER_SIZE, currentBufferSize - HEADER_SIZE - FOOTER_SIZE);
         buffer.resize(file.gcount() + HEADER_SIZE + FOOTER_SIZE);
+
+        if (!is_newfile)
+        {
+            // Calculer le MurmurHash3 du tampon
+            uint32_t hash = calculate_murmurhash3(buffer, HEADER_SIZE, FOOTER_SIZE);
+
+            // Obtenir un pointeur sur les octets du hash en utilisant reinterpret_cast
+            const char *hash_bytes = reinterpret_cast<const char *>(&hash);
+
+            // Créer une chaîne hexadécimale des octets du hash
+            std::stringstream ss;
+            for (int i = 0; i < 4; ++i)
+            {
+                ss << std::setw(2) << std::setfill('0') << std::hex << (0xFF & static_cast<unsigned char>(hash_bytes[i]));
+            }
+
+            std::string checksum_data = ss.str();
+
+            std::string data_with_crc = "DATA_CRC:" + checksum_data;                          // Concatenate strings
+            std::vector<char> incremental_buffer(data_with_crc.begin(), data_with_crc.end()); // Construct vector from string
+
+            bytes_sent = 0;
+            retries = 0;
+            bool must_resend = false;
+            for (retries = 0; retries < MAX_RETRIES; retries++)
+            {
+                if (retries != 0)
+                {
+                    hexDump(incremental_buffer);
+                }
+                bytes_sent = sendto(udp_socket, incremental_buffer.data(), incremental_buffer.size(), 0, (struct sockaddr *)&server_addr, server_len);
+                if (bytes_sent < 0)
+                {
+                    std::cerr << "\nErreur d'envoi du CRC des datas du  paquet UDP #" << packet_number << ", tentative " << retries + 1 << std::endl;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                    continue;
+                }
+
+                std::vector<char> ack_buffer(ACK_SIZE);
+                ssize_t n = recv(tcp_socket, ack_buffer.data(), ACK_SIZE, 0);
+                if (n > 0)
+                {
+                    std::string ack_message = std::string(ack_buffer.data(), n);
+                    if (ack_message == "NOT")
+                    {
+                        must_resend = true;
+                        double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+                        packet_number++;
+                        totalBytesSents += file.gcount();
+                        showProgress(totalBytesSents, totalBytestoSend, startTime, elapsedTime);
+                        buffer.clear();
+                        buffer.resize(currentBufferSize);
+                    }
+                    else if (ack_message == "NEW FILE !")
+                    {
+                        is_newfile = true;
+                    }
+                    break;
+                }
+                else
+                {
+                    // Error or no data received, possibly retrying
+                    std::cerr << "Erreur de réception de l'ACK pour le CRC des données du paquet #" << packet_number << ", tentative " << retries << std::endl;
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+            }
+
+            if (retries == MAX_RETRIES)
+            {
+                std::cerr << "Échec de la réception de la confirmation pour le CRC des données du paquet #" << packet_number << " après " << MAX_RETRIES << " tentatives" << std::endl;
+                break;
+            }
+            else if (must_resend)
+            {
+                continue;
+            }
+        }
 
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
         double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
@@ -446,9 +538,9 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         packet_number++;
         *reinterpret_cast<int *>(buffer.data()) = packet_number;
         *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = chunkSize;
+
         size_t bytes_to_send = buffer.size();
 
-        // std::cout << std::dec << buffer.size() << std::endl;
         std::string checksum = murmurhash_addition(buffer);
         bytes_sent = 0;
         retries = 0;
@@ -458,6 +550,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             if (retries != 0)
             {
                 hexDump(buffer);
+                return;
             }
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
             if (bytes_sent < 0)

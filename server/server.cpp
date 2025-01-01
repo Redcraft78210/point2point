@@ -8,6 +8,7 @@
 #include <set>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sstream>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -179,9 +180,146 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     // Set pour suivre les numéros de séquence des paquets reçus
     std::set<int> received_sequence_numbers;
 
-    FILE *output_file = nullptr;
+    std::fstream output_file;
+    bool is_filename_packet = true;
+    bool existing_file = false;
+    bool packet_corrupted = false;
     while (true)
     {
+        if (!is_filename_packet && !packet_corrupted)
+        {
+            if (existing_file)
+            {
+                int current_buffer_size = buffer.size() - 1024;
+                int r = recvfrom(udp_socket, buffer.data(), current_buffer_size, 0, (struct sockaddr *)&client_addr, &client_len);
+                if (r > 0)
+                {
+                    std::string received_data(buffer.begin(), buffer.begin() + r);
+                    std::vector<char> data_chunk(current_buffer_size - HEADER_SIZE - FOOTER_SIZE);
+
+                    std::vector<std::string> tokens;
+                    std::stringstream ss(received_data);
+                    std::string token;
+
+                    char delimiter = ':';
+                    while (std::getline(ss, token, delimiter))
+                    {
+                        tokens.push_back(token);
+                    }
+
+                    // Ensure there are exactly two parts
+                    if (tokens.size() != 2)
+                    {
+                        std::cerr << "Error: Malformed data (missing delimiter ':')." << std::endl;
+                        // Handle the problem (e.g., return or ignore)
+                        return;
+                    }
+
+                    // The second part contains the checksum as text
+                    const std::string &checksum_str = tokens[1];
+
+                    // Convert the string to uint32_t
+                    uint32_t checksum = 0;
+                    try
+                    {
+                        checksum = static_cast<uint32_t>(std::stoul(checksum_str, nullptr, 16));
+                        checksum = ((checksum & 0xFF) << 24) |      // Moins significatif
+                                   ((checksum & 0xFF00) << 8) |     // Deuxième octet
+                                   ((checksum & 0xFF0000) >> 8) |   // Troisième octet
+                                   ((checksum & 0xFF000000) >> 24); // Plus significatif
+                    }
+                    catch (const std::exception &e)
+                    {
+                        std::cerr << "Error: Unable to convert checksum to uint32_t: " << e.what() << std::endl;
+                        return;
+                    }
+
+                    uint32_t filechunk_checksum;
+
+                    // Position de lecture précédente
+                    long previous_pos = output_file.tellg();
+                    // Lire une portion de données
+                    output_file.read(data_chunk.data(), current_buffer_size - HEADER_SIZE - FOOTER_SIZE);
+
+                    size_t bytes_read = output_file.gcount();
+                    if (bytes_read > 0)
+                    {
+                        filechunk_checksum = calculate_murmurhash3(data_chunk);
+                    }
+
+                    std::string message = "SEND";
+                    if (checksum == filechunk_checksum)
+                    {
+                        message = "NOT";
+                    }
+                    else
+                    {
+                        output_file.seekg(previous_pos, std::ios::beg);
+                    }
+                    // Envoyer la confirmation via TCP avec ré-essai
+                    int retries = 0;
+                    bool ack_sent = false;
+                    // Envoyer une confirmation pour le nom du fichier
+                    while (retries < MAX_RETRIES && !ack_sent)
+                    {
+                        ssize_t bytes_sent = send(tcp_socket, message.c_str(), message.length(), 0);
+
+                        if (bytes_sent > 0)
+                        {
+                            ack_sent = true;
+                            // std::cout << "\nConfirmation TCP envoyée pour le nom de fichier" << std::endl;
+                        }
+                        else
+                        {
+                            retries++; // Increment retries on failure
+                            // std::cerr << "Failed to send TCP confirmation, retrying (" << retries << "/" << MAX_RETRIES << ")" << std::endl;
+                        }
+                    }
+
+                    if (!ack_sent)
+                    {
+                        // std::cerr << "Failed to send TCP confirmation after " << MAX_RETRIES << " retries." << std::endl;
+                    }
+
+                    buffer.clear();
+                    buffer.resize(current_buffer_size + 1024);
+
+                    if (checksum == filechunk_checksum)
+                    {
+                        continue;
+                    }
+                }
+            }
+            else
+            {
+                std::string message = "NEW FILE !";
+
+                // Envoyer la confirmation via TCP avec ré-essai
+                int retries = 0;
+                bool ack_sent = false;
+                // Envoyer une confirmation pour le nom du fichier
+                while (retries < MAX_RETRIES && !ack_sent)
+                {
+                    ssize_t bytes_sent = send(tcp_socket, message.c_str(), message.length(), 0);
+
+                    if (bytes_sent > 0)
+                    {
+                        ack_sent = true;
+                        std::cout << "\nConfirmation TCP envoyée pour le nom de fichier" << std::endl;
+                    }
+                    else
+                    {
+                        retries++; // Increment retries on failure
+                        std::cerr << "Failed to send TCP confirmation, retrying (" << retries << "/" << MAX_RETRIES << ")" << std::endl;
+                    }
+                }
+
+                if (!ack_sent)
+                {
+                    std::cerr << "Failed to send TCP confirmation after " << MAX_RETRIES << " retries." << std::endl;
+                }
+            }
+        }
         int n = recvfrom(udp_socket, buffer.data(), buffer.size(), 0, (struct sockaddr *)&client_addr, &client_len);
         if (n > 0)
         {
@@ -202,6 +340,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             switch (seq_num)
             {
             case 0:
+                is_filename_packet = false;
                 // Extract the file name and checksum
                 std::string file_name(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
                 // récupérer les 4 derniers bytes avant les 4 derniers bytes, qui contiennent le checksum.
@@ -249,6 +388,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 else
                 {
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
+                    packet_corrupted = true;
                 }
 
                 // Envoyer une confirmation pour le nom du fichier
@@ -274,8 +414,18 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     return;
                 }
 
-                // Ouvrir le fichier pour écrire les données
-                output_file = fopen(file_name.c_str(), "wb");
+                std::ifstream file_check(file_name);
+                if (file_check.good())
+                {
+                    // File exists, open it for reading and writing
+                    output_file.open(file_name, std::ios::in | std::ios::out);
+                    existing_file = true;
+                }
+                else
+                {
+                    // File does not exist, open it for writing (create a new file)
+                    output_file.open(file_name, std::ios::out | std::ios::trunc);
+                }
                 if (!output_file)
                 {
                     std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
@@ -285,6 +435,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 continue;
             }
 
+            hexDump(buffer);
             // Vérifier si le fichier est correctement ouvert
             if (!output_file)
             {
@@ -317,6 +468,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 
                 if (checksum == calculated_checksum)
                 {
+                    packet_corrupted = false;
                     message = std::to_string(seq_num);
                     if (compressFlag)
                     {
@@ -329,18 +481,20 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                         }
                         else
                         {
-                            fwrite(buffer.data(), 1, buffer.size(), output_file);
+                            // Écrire les données dans le fichier
+                            output_file.write(buffer.data(), buffer.size());
                         }
                     }
                     else
                     {
-                        fwrite(buffer.data() + HEADER_SIZE, 1, n - HEADER_SIZE - FOOTER_SIZE, output_file);
+                        output_file.write(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
                     }
                     received_sequence_numbers.insert(seq_num);
                     std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
                 }
                 else
                 {
+                    packet_corrupted = true;
                     hexDump(buffer_bak);
                     hexDump(buffer);
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
@@ -390,7 +544,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     }
 
     // Fermeture du fichier après l'écriture
-    fclose(output_file);
+    output_file.close();
 }
 
 // Fonction pour gérer la connexion TCP pour recevoir les confirmations
