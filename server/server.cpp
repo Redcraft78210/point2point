@@ -437,9 +437,9 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 
             hexDump(buffer);
             // Vérifier si le fichier est correctement ouvert
-            if (!output_file)
+            if (!output_file.is_open())
             {
-                std::cerr << "Erreur : fichier non ouvert pour l'écriture." << std::endl;
+                std::cerr << "Erreur : fichier non ouvert." << std::endl;
                 return;
             }
 
