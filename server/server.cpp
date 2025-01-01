@@ -328,6 +328,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             else
             {
                 std::string message = "NEW FILE !";
+                int current_buffer_size = buffer.size() - 1024;
+                recvfrom(udp_socket, buffer.data(), current_buffer_size, 0, (struct sockaddr *)&client_addr, &client_len);
 
                 // Envoyer la confirmation via TCP avec ré-essai
                 int retries = 0;
@@ -357,6 +359,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 }
                 else
                 {
+                    buffer.clear();
+                    buffer.resize(current_buffer_size + 1024);
                     continue;
                 }
                 return;
