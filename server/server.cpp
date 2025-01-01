@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -207,12 +208,16 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                         tokens.push_back(token);
                     }
 
-                    // Ensure there are exactly two parts
                     if (tokens.size() != 2)
                     {
-                        std::cerr << "Error: Malformed data (missing delimiter ':')." << std::endl;
-                        // Handle the problem (e.g., return or ignore)
-                        return;
+                        // Check if std::string received_data corresponds to 4 * 8 bytes of 0x01
+                        if (std::all_of(buffer.data(), buffer.data() + 4, [](unsigned char c)
+                                        { return c == 255; }))
+                        {
+                            std::cout << "Serveur UDP : fin de l'envoi des paquets" << std::endl;
+                            udp_is_closed = true;
+                            break;
+                        }
                     }
 
                     // The second part contains the checksum as text
