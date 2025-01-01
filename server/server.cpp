@@ -185,6 +185,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     bool is_filename_packet = true;
     bool existing_file = false;
     bool packet_corrupted = false;
+    int writed_packet = 0;
     while (true)
     {
         if (!is_filename_packet && !packet_corrupted)
@@ -215,6 +216,11 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                                         { return c == 255; }))
                         {
                             std::cout << "Serveur UDP : fin de l'envoi des paquets" << std::endl;
+                            if (writed_packet == 0)
+                            {
+                                std::cout << "No packet written: the sent data and the destination file content are identical." << std::endl;
+                            }
+
                             udp_is_closed = true;
                             break;
                         }
@@ -249,6 +255,10 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     size_t bytes_read = output_file.gcount();
                     if (bytes_read > 0)
                     {
+                        if (bytes_read < data_chunk.size())
+                        {
+                            data_chunk.resize(bytes_read);
+                        }
                         filechunk_checksum = calculate_murmurhash3(data_chunk);
                     }
 
@@ -387,7 +397,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 
                 if (checksum == calculated_checksum)
                 {
-                    std::cout << "\nNom du fichier reçu : " << file_name << std::endl;
+                    std::cout << "\nFichier Destination: " << file_name << std::endl;
                     message = std::to_string(seq_num);
                 }
                 else
@@ -404,7 +414,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     if (bytes_sent > 0)
                     {
                         ack_sent = true;
-                        std::cout << "\nConfirmation TCP envoyée pour le nom de fichier" << std::endl;
+                        // std::cout << "\nConfirmation TCP envoyée pour le nom de fichier" << std::endl;
                     }
                     else
                     {
@@ -486,6 +496,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                         }
                         else
                         {
+                            writed_packet++;
+
                             // Écrire les données dans le fichier
                             output_file.write(buffer.data(), buffer.size());
                         }
