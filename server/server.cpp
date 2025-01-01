@@ -177,10 +177,11 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     bool is_filename_packet = true;
     bool existing_file = false;
     bool packet_corrupted = false;
+    bool incremental_mode = true;
     int writed_packet = 0;
     while (true)
     {
-        if (!is_filename_packet && !packet_corrupted)
+        if (!is_filename_packet && !packet_corrupted && incremental_mode)
         {
             if (existing_file)
             {
@@ -240,22 +241,49 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     uint32_t filechunk_checksum;
 
                     // Position de lecture précédente
-                    long previous_pos = output_file.tellg();
-                    // Lire une portion de données
-                    output_file.read(data_chunk.data(), current_buffer_size - HEADER_SIZE - FOOTER_SIZE);
+                    std::streampos previous_pos = output_file.tellg();
 
-                    size_t bytes_read = output_file.gcount();
-                    if (bytes_read > 0)
+                    // Déplacer le curseur à la fin pour vérifier si le fichier est vide
+                    output_file.seekg(0, std::ios::end);
+                    if (output_file.tellg() == 0)
                     {
-                        if (bytes_read < data_chunk.size())
+                        std::cout << "Le fichier est vide. Poursuite de l'exécution." << std::endl;
+                        output_file.seekg(previous_pos, std::ios::beg); // Restaurer la position précédente
+                        // Continuer l'exécution du programme sans lire
+                    }
+                    else
+                    {
+                        // Restaurer la position précédente
+                        output_file.seekg(previous_pos, std::ios::beg);
+                        if (!output_file.good())
                         {
-                            data_chunk.resize(bytes_read);
+                            std::cerr << "Erreur lors du déplacement du curseur à la position précédente." << std::endl;
+                            return; // Vous pouvez décider quoi faire en cas d'erreur (afficher un message ou ignorer).
                         }
-                        filechunk_checksum = calculate_murmurhash3(data_chunk);
+
+                        // Lire une portion de données
+                        output_file.read(data_chunk.data(), current_buffer_size - HEADER_SIZE - FOOTER_SIZE);
+                        if (!output_file)
+                        {
+                            if (output_file.eof())
+                            {
+                                output_file.clear();
+                            }
+                        }
+                        // Utilisation des données lues
+                        size_t bytes_read = output_file.gcount();
+                        if (bytes_read > 0)
+                        {
+                            if (bytes_read < data_chunk.size())
+                            {
+                                data_chunk.resize(bytes_read);
+                            }
+                            filechunk_checksum = calculate_murmurhash3(data_chunk);
+                        }
                     }
 
                     std::string message = "SEND";
-                    if (checksum == filechunk_checksum)
+                    if (filechunk_checksum && filechunk_checksum == checksum)
                     {
                         message = "NOT";
                     }
@@ -312,7 +340,9 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     if (bytes_sent > 0)
                     {
                         ack_sent = true;
+                        incremental_mode = false;
                         std::cout << "\nConfirmation TCP envoyée pour le nom de fichier" << std::endl;
+                        break;
                     }
                     else
                     {
@@ -325,6 +355,11 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 {
                     std::cerr << "Failed to send TCP confirmation after " << MAX_RETRIES << " retries." << std::endl;
                 }
+                else
+                {
+                    continue;
+                }
+                return;
             }
         }
         int n = recvfrom(udp_socket, buffer.data(), buffer.size(), 0, (struct sockaddr *)&client_addr, &client_len);
@@ -425,14 +460,15 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 if (file_check.good())
                 {
                     // File exists, open it for reading and writing
-                    output_file.open(file_name, std::ios::in | std::ios::out);
                     existing_file = true;
+                    output_file.open(file_name, std::ios::in | std::ios::out | std::ios::binary);
                 }
                 else
                 {
-                    // File does not exist, open it for writing (create a new file)
-                    output_file.open(file_name, std::ios::out | std::ios::trunc);
+                    // File does not exist, create a new file and open it for writing
+                    output_file.open(file_name, std::ios::out | std::ios::binary);
                 }
+
                 if (!output_file)
                 {
                     std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
@@ -478,7 +514,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     message = std::to_string(seq_num);
                     if (compressFlag)
                     {
-
                         std::cerr << "Compress flag: #" << seq_num << std::endl; // Log actual sequence number
                         if (!decompressChunk(buffer))
                         {
@@ -494,16 +529,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     }
                     else
                     {
-                        hexDump(buffer);
-                        try
-                        {
-                            output_file.write(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);  
-                        }
-                        catch (const std::exception &e)
-                        {
-                            std::cerr << "Exception caught: " << e.what() << std::endl;
-                        }
-                        output_file.write(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
+                        output_file.write(reinterpret_cast<const char *>(buffer.data() + HEADER_SIZE), n - HEADER_SIZE - FOOTER_SIZE);
                     }
                     writed_packet++;
                     received_sequence_numbers.insert(seq_num);
