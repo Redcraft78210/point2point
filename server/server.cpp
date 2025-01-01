@@ -8,12 +8,13 @@
 #include <iostream>
 #include <set>
 #include <signal.h>
+#include <stdexcept>
 #include <sys/socket.h>
 #include <sstream>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <zlib.h>
+#include <zstd.h>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -118,10 +119,11 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
     const char *bufferEnd = input.data() + input.size() - FOOTER_SIZE;
     size_t bufferSize = bufferEnd - bufferStart;
 
-    uLongf outputSize = bufferSize * 2;
+    // Estimate the maximum decompressed size
+    size_t outputSize = bufferSize * 2;
     std::vector<char> tempBuffer(outputSize);
 
-    const uLongf MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
+    const size_t MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
 
     while (true)
     {
@@ -134,38 +136,28 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
             return false;
         }
 
-        int result = uncompress(
-            reinterpret_cast<Bytef *>(tempBuffer.data()),
-            &outputSize,
-            reinterpret_cast<const Bytef *>(bufferStart),
-            bufferSize);
+        // Perform the decompression
+        size_t decompressedSize = ZSTD_decompress(tempBuffer.data(), outputSize, bufferStart, bufferSize);
 
-        if (result == Z_OK)
-        {
-            // Resize the buffer to the actual decompressed size
-            input.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
-            if (verbose)
-            {
-                std::cout << "Decompressed successfully. Original size: " << bufferSize
-                          << ", Decompressed size: " << outputSize << " bytes.\n";
-            }
-            return true;
-        }
-        else if (result == Z_BUF_ERROR)
-        {
-            // Expand the output buffer
-            outputSize *= 2;
-            tempBuffer.resize(outputSize);
-        }
-        else
+        // Check if decompression was successful
+        if (ZSTD_isError(decompressedSize))
         {
             if (verbose)
             {
-                // Decompression error
-                std::cerr << "Decompression error: " << result << "\n";
+                std::cerr << "Decompression error: " << ZSTD_getErrorName(decompressedSize) << "\n";
             }
             return false;
         }
+
+        // Resize the buffer to the actual decompressed size
+        input.assign(tempBuffer.begin(), tempBuffer.begin() + decompressedSize);
+
+        if (verbose)
+        {
+            std::cout << "Decompressed successfully. Original size: " << bufferSize
+                      << ", Decompressed size: " << decompressedSize << " bytes.\n";
+        }
+        return true;
     }
 }
 
@@ -450,7 +442,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 continue;
             }
 
-            hexDump(buffer);
             // Vérifier si le fichier est correctement ouvert
             if (!output_file.is_open())
             {
@@ -496,7 +487,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                         }
                         else
                         {
-                            writed_packet++;
 
                             // Écrire les données dans le fichier
                             output_file.write(buffer.data(), buffer.size());
@@ -504,8 +494,18 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     }
                     else
                     {
+                        hexDump(buffer);
+                        try
+                        {
+                            output_file.write(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);  
+                        }
+                        catch (const std::exception &e)
+                        {
+                            std::cerr << "Exception caught: " << e.what() << std::endl;
+                        }
                         output_file.write(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
                     }
+                    writed_packet++;
                     received_sequence_numbers.insert(seq_num);
                     std::cout << "Paquet #" << seq_num << " reçu et écrit dans le fichier." << std::endl;
                 }

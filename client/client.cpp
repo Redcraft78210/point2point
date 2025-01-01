@@ -13,13 +13,15 @@
 #include <iostream>
 #include <signal.h>
 #include <sstream>
+#include <stdexcept>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h> // Pour struct timeval
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <zlib.h>
+#include <zstd.h>
+
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -258,20 +260,26 @@ bool compressChunk(std::vector<char> &buffer, bool verbose = false)
     size_t dataSize = buffer.size() - HEADER_SIZE - FOOTER_SIZE;
 
     // Calcul de la taille maximale compressée
-    uLongf compressedSize = compressBound(dataSize);
-    std::vector<char> tempBuffer(HEADER_SIZE + compressedSize); // Tampon temporaire
+    size_t maxCompressedSize = ZSTD_compressBound(dataSize);
+    std::vector<char> tempBuffer(HEADER_SIZE + maxCompressedSize); // Tampon temporaire
+
     try
     {
         // Compression des données dans le tampon temporaire
-        int result = compress2(reinterpret_cast<Bytef *>(tempBuffer.data() + HEADER_SIZE), &compressedSize,
-                               reinterpret_cast<const Bytef *>(&*dataStart), dataSize, Z_BEST_COMPRESSION);
+        size_t compressedSize = ZSTD_compress(
+            tempBuffer.data() + HEADER_SIZE, // Destination buffer
+            maxCompressedSize,               // Destination buffer size
+            &*dataStart,                     // Source data
+            dataSize,                        // Source data size
+            7                 // Compression level
+        );
 
         // Vérification du résultat de la compression
-        if (result != Z_OK)
+        if (ZSTD_isError(compressedSize))
         {
             if (verbose)
             {
-                std::cerr << "Compression failed with error code: " << result << std::endl;
+                std::cerr << "Compression failed: " << ZSTD_getErrorName(compressedSize) << std::endl;
             }
             return false;
         }

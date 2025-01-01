@@ -1,7 +1,7 @@
 # Définir les variables
 CXX = g++
 CXXFLAGS = -Wall -std=c++11 -I./include
-LDFLAGS = -lz  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
+LDFLAGS = -lzstd  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
 
 # Source files
 SRC_SERVER = server/server.cpp
