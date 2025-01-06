@@ -440,7 +440,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             }
             else
             {
-                std::cerr << "The folder" << std::string(ack_buffer.data(), n) << "does not exist ! " << std::endl;
+                std::cerr << "The folder \"" << std::string(ack_buffer.data(), n) << "\" does not exist ! " << std::endl;
                 return;
             }
         }

@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
+#include <regex>
 #include <thread>
 #include <unistd.h>
 #include <unistd.h> // Pour chdir
@@ -156,9 +157,6 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
             return false;
         }
 
-        // Perform the decompression
-        size_t decompressedSize = ZSTD_decompress(tempBuffer.data(), outputSize, bufferStart, bufferSize);
-
         while (true)
         {
             size_t decompressedSize = ZSTD_decompress(tempBuffer.data(), tempBuffer.size(), bufferStart, bufferSize);
@@ -201,7 +199,7 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
     }
 }
 
-std::string getProblematicComponent(const std::string &path)
+std::string checkProblematicComponent(const std::string &path)
 {
     std::filesystem::path fsPath = path;
 
@@ -518,8 +516,12 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     packet_corrupted = true;
                 }
-
-                std::string pathCheck = getProblematicComponent(filePath);
+                std::regex linuxDirRegex(R"((?<!\\)/)");
+                std::string pathCheck;
+                if (std::regex_search(filePath, linuxDirRegex))
+                {
+                    pathCheck = checkProblematicComponent(filePath);
+                }
                 if (pathCheck != "")
                 {
                     message = pathCheck;
