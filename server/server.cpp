@@ -16,7 +16,6 @@
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
-#include <regex>
 #include <thread>
 #include <unistd.h>
 #include <unistd.h> // Pour chdir
@@ -516,13 +515,27 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     packet_corrupted = true;
                 }
-                // Regex to match Linux-style directory paths
-                std::regex linuxDirRegex(R"(^(.*[^\\]|^)/)");
-                std::string pathCheck = "";
 
-                // Check if the filePath matches the regex
-                if (std::regex_search(filePath, linuxDirRegex))
+                bool foundUnescapedSlash = false;
+
+                // Iterate through the file path to find unescaped forward slashes
+                for (size_t i = 0; i < filePath.length(); ++i)
                 {
+                    if (filePath[i] == '/')
+                    {
+                        // Check if the slash is unescaped (not preceded by a backslash)
+                        if (i == 0 || filePath[i - 1] != '\\')
+                        {
+                            foundUnescapedSlash = true;
+                            break;
+                        }
+                    }
+                }
+
+                std::string pathCheck = "";
+                if (foundUnescapedSlash)
+                {
+                    // Call the function to check problematic components
                     pathCheck = checkProblematicComponent(filePath);
                 }
 
