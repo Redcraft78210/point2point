@@ -1,18 +1,24 @@
-#include <arpa/inet.h>
-#include <algorithm>
-#include <chrono>
-#include <cstring>
-#include <fstream>
 #include "MurmurHash3.h" // Include MurmurHash3 header
-#include <iomanip>       // For std::hex, std::setw, and std::setfill
+#include <algorithm>
+#include <arpa/inet.h>
+#include <chrono>
+#include <cstdlib> // Pour getenv
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip> // For std::hex, std::setw, and std::setfill
 #include <iostream>
+#include <limits.h> // Pour PATH_MAX
+#include <pwd.h>
 #include <set>
 #include <signal.h>
-#include <stdexcept>
-#include <sys/socket.h>
 #include <sstream>
+#include <stdexcept>
+#include <string>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <unistd.h> // Pour chdir
 #include <vector>
 #include <zstd.h>
 
@@ -120,7 +126,21 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
     size_t bufferSize = bufferEnd - bufferStart;
 
     // Estimate the maximum decompressed size
-    size_t outputSize = bufferSize * 2;
+    size_t outputSize = ZSTD_getFrameContentSize(bufferStart, bufferSize);
+    if (outputSize == ZSTD_CONTENTSIZE_ERROR)
+    {
+        if (verbose)
+        {
+            std::cerr << "Error: Not a valid compressed file.\n";
+        }
+        return false;
+    }
+    if (outputSize == ZSTD_CONTENTSIZE_UNKNOWN)
+    {
+        // If the output size is unknown, start with a reasonable initial size
+        outputSize = bufferSize * 2;
+    }
+
     std::vector<char> tempBuffer(outputSize);
 
     const size_t MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
@@ -139,26 +159,69 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
         // Perform the decompression
         size_t decompressedSize = ZSTD_decompress(tempBuffer.data(), outputSize, bufferStart, bufferSize);
 
-        // Check if decompression was successful
-        if (ZSTD_isError(decompressedSize))
+        while (true)
         {
-            if (verbose)
+            size_t decompressedSize = ZSTD_decompress(tempBuffer.data(), tempBuffer.size(), bufferStart, bufferSize);
+
+            if (ZSTD_isError(decompressedSize))
             {
-                std::cerr << "Decompression error: " << ZSTD_getErrorName(decompressedSize) << "\n";
+                std::string errorName = ZSTD_getErrorName(decompressedSize);
+                if (errorName == "Destination buffer is too small")
+                {
+                    // Double the buffer size and try again
+                    tempBuffer.resize(tempBuffer.size() * 2);
+                    if (verbose)
+                    {
+                        std::cerr << "Buffer too small. Resizing to: " << tempBuffer.size() << " bytes.\n";
+                    }
+                }
+                else
+                {
+                    // Other decompression error
+                    if (verbose)
+                    {
+                        std::cerr << "Decompression error: " << errorName << "\n";
+                    }
+                    return false;
+                }
             }
-            return false;
-        }
+            else
+            {
+                // Resize the buffer to the actual decompressed size
+                input.assign(tempBuffer.begin(), tempBuffer.begin() + decompressedSize);
 
-        // Resize the buffer to the actual decompressed size
-        input.assign(tempBuffer.begin(), tempBuffer.begin() + decompressedSize);
-
-        if (verbose)
-        {
-            std::cout << "Decompressed successfully. Original size: " << bufferSize
-                      << ", Decompressed size: " << decompressedSize << " bytes.\n";
+                if (verbose)
+                {
+                    std::cout << "Decompressed successfully. Original size: " << bufferSize
+                              << ", Decompressed size: " << decompressedSize << " bytes.\n";
+                }
+                return true;
+            }
         }
-        return true;
     }
+}
+
+std::string getProblematicComponent(const std::string &path)
+{
+    std::filesystem::path fsPath = path;
+
+    // Construire chaque sous-chemin et vérifier son existence
+    for (auto it = fsPath.begin(); it != fsPath.end(); ++it)
+    {
+        std::filesystem::path currentPath = fsPath.root_path();
+        for (auto subIt = fsPath.begin(); subIt != it; ++subIt)
+        {
+            currentPath /= *subIt;
+        }
+
+        // Si un composant n'existe pas, retourner son nom
+        if (!std::filesystem::exists(currentPath))
+        {
+            return it->string(); // Retourner uniquement le composant actuel
+        }
+    }
+
+    return ""; // Aucun problème trouvé
 }
 
 // Fonction pour gérer la réception des paquets UDP et écrire dans le fichier
@@ -167,21 +230,21 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     std::vector<char> buffer(256);
-    std::string file_name;
+    std::string filePath;
     bool compressFlag = false;
     int next_buffer_size;
     // Set pour suivre les numéros de séquence des paquets reçus
     std::set<int> received_sequence_numbers;
 
     std::fstream output_file;
-    bool is_filename_packet = true;
+    bool is_filepath_packet = true;
     bool existing_file = false;
     bool packet_corrupted = false;
     bool incremental_mode = true;
     int writed_packet = 0;
     while (true)
     {
-        if (!is_filename_packet && !packet_corrupted && incremental_mode)
+        if (!is_filepath_packet && !packet_corrupted && incremental_mode)
         {
             if (existing_file)
             {
@@ -386,11 +449,30 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
             switch (seq_num)
             {
             case 0:
-                is_filename_packet = false;
+                is_filepath_packet = false;
                 // Extract the file name and checksum
-                std::string file_name(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
+                std::string filePath(buffer.data() + HEADER_SIZE, n - HEADER_SIZE - FOOTER_SIZE);
+
+                // Récupérer le répertoire courant
+                char currentDir[PATH_MAX];
+                getcwd(currentDir, sizeof(currentDir));
+
+                // Récupérer les informations de l'utilisateur courant
+                struct passwd *pw = getpwuid(getuid());
+                if (pw == nullptr)
+                {
+                    std::cerr << "Error: Unable to retrieve user information.\n";
+                    return;
+                }
+
+                const char *homeDir = pw->pw_dir;
+
+                // Changer le répertoire courant vers le home
+                chdir(homeDir);
+
                 // récupérer les 4 derniers bytes avant les 4 derniers bytes, qui contiennent le checksum.
-                std::vector<unsigned char> last_4_bytes(buffer.end() - 4, buffer.end());
+                std::vector<unsigned char>
+                    last_4_bytes(buffer.end() - 4, buffer.end());
 
                 // récupérer les 4 derniers bytes avant les 4 derniers bytes, qui précisent si la compression est activée ou non.
                 std::vector<unsigned char> four_bytes_before_last_four_bytes(buffer.end() - 8, buffer.end() - 4);
@@ -428,7 +510,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
 
                 if (checksum == calculated_checksum)
                 {
-                    std::cout << "\nFichier Destination: " << file_name << std::endl;
+                    std::cout << "\nFichier Destination: " << filePath << std::endl;
                     message = std::to_string(seq_num);
                 }
                 else
@@ -436,6 +518,26 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     packet_corrupted = true;
                 }
+
+                std::string pathCheck = getProblematicComponent(filePath);
+                if (pathCheck != "")
+                {
+                    message = pathCheck;
+                }
+                std::ifstream file_check(filePath);
+                if (file_check.good())
+                {
+                    // File exists, open it for reading and writing
+                    existing_file = true;
+                    output_file.open(filePath, std::ios::in | std::ios::out | std::ios::binary);
+                }
+                else
+                {
+                    // File does not exist, create a new file and open it for writing
+                    output_file.open(filePath, std::ios::out | std::ios::binary);
+                }
+
+                chdir(currentDir);
 
                 // Envoyer une confirmation pour le nom du fichier
                 while (retries < MAX_RETRIES && !ack_sent)
@@ -458,24 +560,11 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 {
                     std::cerr << "Failed to send TCP confirmation after " << MAX_RETRIES << " retries." << std::endl;
                     return;
-                }
-
-                std::ifstream file_check(file_name);
-                if (file_check.good())
-                {
-                    // File exists, open it for reading and writing
-                    existing_file = true;
-                    output_file.open(file_name, std::ios::in | std::ios::out | std::ios::binary);
-                }
-                else
-                {
-                    // File does not exist, create a new file and open it for writing
-                    output_file.open(file_name, std::ios::out | std::ios::binary);
-                }
+                };
 
                 if (!output_file)
                 {
-                    std::cerr << "Erreur d'ouverture du fichier de sortie : " << file_name << std::endl;
+                    std::cerr << "Erreur d'ouverture du fichier de sortie : " << filePath << std::endl;
                     return;
                 }
                 buffer.resize(BUFFER_SIZE + 1024);

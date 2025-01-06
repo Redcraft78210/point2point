@@ -16,12 +16,13 @@
 #include <stdexcept>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h> // Pour struct timeval
+#include <regex>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 #include <zstd.h>
-
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -96,7 +97,8 @@ void hexDump(const std::vector<char> &buffer)
 
 void showUsage()
 {
-    std::cout << "Usage: file_sender \033[4mOPTIONS\033[0m\n";
+    // std::cout << "Usage: file_sender \033[4mOPTIONS\033[0m SRC... [USER@]HOST:DEST\n";
+    std::cout << "Usage: file_sender [OPTIONS] SRC... [USER@]HOST:DEST\n";
     std::cout << "  -h, --help            Affiche l'aide\n";
     std::cout << "  -T, --test <file>      Numéro du test à effectuer\n";
     std::cout << "  -f, --file <file>      Fichier à envoyer\n";
@@ -132,31 +134,31 @@ void signal_handler(int signal)
     }
 }
 
-void test1(std::string &filePath, std::string &serverIP, bool &compressFlag)
+void test1(std::string &local_filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en local
     serverIP = "127.0.0.1";
-    filePath = "data_to_send/fichier_binaire_1G.bin";
+    local_filePath = "data_to_send/fichier_binaire_1G.bin";
 }
-void test2(std::string &filePath, std::string &serverIP, bool &compressFlag)
+void test2(std::string &local_filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire sans compression en distant
-    filePath = "data_to_send/large_file.txt";
+    local_filePath = "data_to_send/large_file.txt";
     serverIP = "192.168.1.240";
 }
-void test3(std::string &filePath, std::string &serverIP, bool &compressFlag)
+void test3(std::string &local_filePath, std::string &serverIP, bool &compressFlag)
 {
     // Test d'un gros fichier binaire avec compression en local
-    filePath = "data_to_send/large_file.txt";
+    local_filePath = "data_to_send/large_file.txt";
     serverIP = "127.0.0.1";
     compressFlag = true;
 }
-void test4(std::string &filePath, std::string &serverIP, bool &compressFlag)
+void test4(std::string &local_filePath, std::string &serverIP, bool &compressFlag)
 { // Test d'un gros fichier binaire avec compression en distant
-    filePath = "data_to_send/fichier_binaire_1G.bin";
+    local_filePath = "data_to_send/fichier_binaire_1G.bin";
     serverIP = "192.168.1.240";
 }
-void test5(std::string &filePath, std::string &serverIP, bool &compressFlag) { printf("Called test5()\n"); }
+void test5(std::string &local_filePath, std::string &serverIP, bool &compressFlag) { printf("Called test5()\n"); }
 
 // Function to calculate MurmurHash3 on a part of the buffer
 uint32_t calculate_murmurhash3(const std::vector<char> &buffer,
@@ -253,6 +255,20 @@ void showProgress(size_t bytesSent, size_t totalBytes, const std::chrono::steady
     std::flush(std::cout);
 }
 
+// Function to check if a path exists
+bool fileExists(const std::string &path)
+{
+    struct stat buffer;
+    return (stat(path.c_str(), &buffer) == 0);
+}
+
+// Function to check if a path has read permission
+bool hasReadPermission(const std::string &path)
+{
+    std::ifstream file(path);
+    return file.is_open();
+}
+
 bool compressChunk(std::vector<char> &buffer, bool verbose = false)
 {
     /// Pointeur sur les données à partir de l'offset HEADER_SIZE dans buffer
@@ -271,7 +287,7 @@ bool compressChunk(std::vector<char> &buffer, bool verbose = false)
             maxCompressedSize,               // Destination buffer size
             &*dataStart,                     // Source data
             dataSize,                        // Source data size
-            7                 // Compression level
+            7                                // Compression level
         );
 
         // Vérification du résultat de la compression
@@ -349,7 +365,7 @@ bool resendMetadata(int udp_socket, const std::vector<char> &buffer, size_t meta
 }
 
 // Fonction pour envoyer un fichier par UDP avec confirmation via TCP
-void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, int tcp_socket, bool compressFlag)
+void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_path, const char *destination, int tcp_socket, bool compressFlag)
 {
 
     // Définir un délai d'attente de 15 secondes pour la réception
@@ -379,22 +395,12 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     size_t totalBytestoSend = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    // Transmettre le nom du fichier en premier paquet
-    std::string file_name = std::string(file_path).substr(std::string(file_path).find_last_of("/\\") + 1);
-    size_t name_length = file_name.size();
-
-    if (name_length >= METADATA_SIZE - sizeof(int) - FOOTER_SIZE)
-    {
-        std::cerr << "Nom de fichier trop long pour être transmis" << std::endl;
-        return;
-    }
-
     *reinterpret_cast<int *>(buffer.data()) = 0; // Special packet for file name
     *reinterpret_cast<int *>(buffer.data() + sizeof(int)) = BUFFER_SIZE;
-    std::memcpy(buffer.data() + HEADER_SIZE, file_name.data(), file_name.size());
+    std::memcpy(buffer.data() + HEADER_SIZE, destination, std::strlen(destination));
     *reinterpret_cast<int *>(buffer.data() + buffer.size() - 2 * sizeof(int)) = compressFlag ? 1 : 0;
     std::string checksum = murmurhash_addition(buffer);
-    while (sendto(udp_socket, buffer.data(), METADATA_SIZE, 0, (struct sockaddr *)&server_addr, server_len) < 0)
+    while (sendto(udp_socket, buffer.data(), buffer.size(), 0, (struct sockaddr *)&server_addr, server_len) < 0)
     {
         std::cerr << "Erreur d'envoi du nom de fichier" << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
@@ -431,6 +437,11 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                     return;
                 }
                 continue; // Skip the sleep and retry immediately
+            }
+            else
+            {
+                std::cerr << "The folder" << std::string(ack_buffer.data(), n) << "does not exist ! " << std::endl;
+                return;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
@@ -651,18 +662,29 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    std::string filePath;
+    std::string local_filePath;
+    std::string remote_filePath;
+    std::string destination;
+
     std::string serverIP = SERVER_ADDR;
     int udp_port = UDP_PORT;
     int tcp_port = TCP_PORT;
     bool compressFlag = false;
     bool verbose = false;
 
+    // Verify if no arguments are passed
+    if (argc == 1)
+    {
+        showUsage();
+        return 0;
+    }
+
     // Parse command-line options
     struct option longOpts[] = {
         {"help", no_argument, nullptr, 'h'},
         {"test", required_argument, nullptr, 'T'},
-        {"file", required_argument, nullptr, 'f'},
+        {"local_filePath", required_argument, nullptr, 'f'},
+        {"remote_filePath", required_argument, nullptr, 'r'},
         {"udp_port", required_argument, nullptr, 'u'},
         {"tcp_port", required_argument, nullptr, 't'},
         {"address", required_argument, nullptr, 'a'},
@@ -671,7 +693,7 @@ int main(int argc, char *argv[])
         {nullptr, 0, nullptr, 0}};
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "hf:u:t:a:cvT:", longOpts, nullptr)) != -1)
+    while ((opt = getopt_long(argc, argv, "hf:u:t:a:cvlT:", longOpts, nullptr)) != -1)
     {
         switch (opt)
         {
@@ -681,32 +703,32 @@ int main(int argc, char *argv[])
                 int test = std::stoi(optarg); // Convert argument to integer
                 if (std::to_string(test).length() != std::strlen(optarg))
                 {
-                    std::cout << "\"" << optarg << "\" is not a valid integer\n";
+                    std::cerr << "\"" << optarg << "\" is not a valid integer\n";
                     showUsage();
                     return 1;
                 }
 
-                void (*tests[])(std::string &filePath, std::string &serverIP, bool &) = {test1, test2, test3, test4, test5}; // Add other test functions
+                void (*tests[])(std::string &local_filePath, std::string &serverIP, bool &) = {test1, test2, test3, test4, test5}; // Add other test functions
                 if (test >= 1 && test <= 5)
                 {
                     verbose = true;
-                    tests[test - 1](filePath, serverIP, compressFlag);
+                    tests[test - 1](local_filePath, serverIP, compressFlag);
                     break;
                 }
                 else
                 {
-                    std::cout << "Test " << optarg << " does not exist\n";
+                    std::cerr << "Test " << optarg << " does not exist\n";
                     showUsage();
                     return 1;
                 }
             }
             catch (const std::invalid_argument &)
             {
-                std::cout << optarg << " is not a valid integer\n";
+                std::cerr << optarg << " is not a valid integer\n";
             }
             catch (const std::out_of_range &)
             {
-                std::cout << optarg << " is out of range\n";
+                std::cerr << optarg << " is out of range\n";
             }
             showUsage();
             return 1;
@@ -715,37 +737,19 @@ int main(int argc, char *argv[])
             showUsage();
             return 0;
         case 'f':
-            filePath = optarg;
+            local_filePath = optarg;
+            break;
+        case 'r':
+            remote_filePath = optarg;
             break;
         case 'u':
-            if (optarg && *optarg != '\0')
-            {
-                udp_port = std::stoi(optarg);
-            }
-            else
-            {
-                std::cerr << "Option -u requires a valid argument.\n";
-            }
+            udp_port = std::stoi(optarg);
             break;
         case 't':
-            if (optarg && *optarg != '\0')
-            {
-                tcp_port = std::stoi(optarg);
-            }
-            else
-            {
-                std::cerr << "Option -t requires a valid argument.\n";
-            }
+            tcp_port = std::stoi(optarg);
             break;
         case 'a':
-            if (optarg && *optarg != '\0')
-            {
-                serverIP = optarg;
-            }
-            else
-            {
-                std::cerr << "Option -a requires a valid argument.\n";
-            }
+            serverIP = optarg;
             break;
         case 'c':
             compressFlag = true;
@@ -759,10 +763,77 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (filePath.empty())
+    // Handle remaining arguments (e.g., positional arguments like destination)
+    std::vector<std::string> positionalArgs;
+    for (int i = optind; i < argc; ++i)
     {
-        std::cerr << "No file specified!\n";
+        positionalArgs.emplace_back(argv[i]);
+    }
+
+    if (positionalArgs.size() == 2)
+    {
+        local_filePath = positionalArgs[0];
+        destination = positionalArgs[1];
+        // Validate destination format ([user@]host:path)
+        std::regex destRegex(R"(^[\w.-]+@[\w.-]+:[\w/]+$)"); // Regex for [user@]host:path
+        std::smatch match;
+
+        if (std::regex_match(destination, destRegex))
+        {
+            // If the format matches [user@]host:path
+            size_t atPos = destination.find('@');
+            if (atPos != std::string::npos)
+            {
+                std::string host = destination.substr(atPos + 1, destination.find(':') - atPos - 1);
+                std::string destPath = destination.substr(destination.find(':') + 1);
+                serverIP = host;
+                destination = destPath;
+            }
+        }
+        else
+        {
+            // If the format doesn't match the first regex, check for [host:path]
+            std::regex destRegexWithoutUser(R"(^[\w.-]+:[\w/]+$)"); // Regex for host:path
+
+            if (std::regex_match(destination, destRegexWithoutUser))
+            {
+                // Extract the host part before the ':'
+                size_t colonPos = destination.find(':');
+                if (colonPos != std::string::npos)
+                {
+                    std::string host = destination.substr(0, colonPos);
+                    std::string destPath = destination.substr(1, colonPos);
+                    serverIP = host;
+                    destination = destPath;
+                }
+            }
+            else
+            {
+                std::cerr << "Invalid destination format: " << destination << "\n";
+                showUsage();
+                return 1;
+            }
+        }
+    }
+
+    else if (!positionalArgs.empty())
+    {
+        std::cerr << "Bad syntax." << std::endl;
         showUsage();
+        return 1;
+    }
+
+    if (fileExists(local_filePath))
+    {
+        if (!hasReadPermission(local_filePath))
+        {
+            std::cout << "Path exists but you don't have read permission." << std::endl;
+            return 1;
+        }
+    }
+    else
+    {
+        std::cout << "Path does not exist." << std::endl;
         return 1;
     }
 
@@ -870,7 +941,7 @@ int main(int argc, char *argv[])
     }
 
     // Send the file over UDP with TCP confirmations
-    send_file_udp(udp_socket, server_addr, filePath.c_str(), tcp_socket, compressFlag); // You should implement this function
+    send_file_udp(udp_socket, server_addr, local_filePath.c_str(), destination.c_str(), tcp_socket, compressFlag); // You should implement this function
 
     // Close the sockets after sending
     close(udp_socket);

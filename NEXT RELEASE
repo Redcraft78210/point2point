@@ -5,3 +5,5 @@ Connexion established alors que non LMAO
 Ajouter la transmission incrémentale
 
 il faut retravailler tous les std::COUT
+
+Vérifier si -f est utilisé, dans ce cas 1 seul argument positionnel: utilisateur, adresse et dossier de destination

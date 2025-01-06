@@ -1,6 +1,6 @@
 # Définir les variables
 CXX = g++
-CXXFLAGS = -Wall -std=c++11 -I./include
+CXXFLAGS = -Wall -std=c++17 -I./include
 LDFLAGS = -lzstd  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
 
 # Source files
