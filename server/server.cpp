@@ -516,16 +516,22 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     packet_corrupted = true;
                 }
+                // Regex to match Linux-style directory paths
                 std::regex linuxDirRegex(R"((?<!\\)/)");
-                std::string pathCheck;
+                std::string pathCheck = "";
+
+                // Check if the filePath matches the regex
                 if (std::regex_search(filePath, linuxDirRegex))
                 {
                     pathCheck = checkProblematicComponent(filePath);
                 }
-                if (pathCheck != "")
+
+                // If a problematic component is found, update the message
+                if (!pathCheck.empty())
                 {
                     message = pathCheck;
                 }
+                
                 std::ifstream file_check(filePath);
                 if (file_check.good())
                 {
