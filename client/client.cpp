@@ -92,7 +92,7 @@ void hexDump(const std::vector<char> &buffer)
         }
         std::cerr << std::endl;
     }
-    std::cerr << std::dec << std::endl;
+    std::cerr << std::dec;
 }
 
 void showUsage()
@@ -569,7 +569,6 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             if (retries != 0)
             {
                 hexDump(buffer);
-                return;
             }
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
             if (bytes_sent < 0)
