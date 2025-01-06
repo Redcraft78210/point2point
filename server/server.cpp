@@ -517,7 +517,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     packet_corrupted = true;
                 }
                 // Regex to match Linux-style directory paths
-                std::regex linuxDirRegex(R"((?<!\\)/)");
+                std::regex linuxDirRegex(R"(^(.*[^\\]|^)/)");
                 std::string pathCheck = "";
 
                 // Check if the filePath matches the regex
@@ -531,7 +531,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 {
                     message = pathCheck;
                 }
-                
+
                 std::ifstream file_check(filePath);
                 if (file_check.good())
                 {
