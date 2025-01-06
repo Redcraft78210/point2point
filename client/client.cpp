@@ -653,6 +653,33 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     file.close();
 }
 
+bool endsWithNonEscapedSlash(const std::string &str)
+{
+    // Check if the string is empty or doesn't end with '/'
+    if (str.empty() || str.back() != '/')
+    {
+        return false;
+    }
+
+    // Iterate backward to count the number of consecutive backslashes before the last character
+    int backslashCount = 0;
+    for (int i = str.size() - 2; i >= 0; --i)
+    {
+        if (str[i] == '\\')
+        {
+            ++backslashCount;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    // If the number of backslashes is even, the '/' is not escaped
+    // If odd, the '/' is escaped
+    return (backslashCount % 2 == 0);
+}
+
 int main(int argc, char *argv[])
 {
     // Verify if no arguments are passed
@@ -813,6 +840,11 @@ int main(int argc, char *argv[])
                 showUsage();
                 return 1;
             }
+        }
+        if (endsWithNonEscapedSlash(destination))
+        {
+            std::cout << "Invalid Destination filepath: Destination filepath cannot end by a non-escaped slash." << std::endl;
+            return 3;
         }
     }
 
