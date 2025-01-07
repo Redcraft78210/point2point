@@ -738,6 +738,10 @@ int main()
         std::cerr << "Erreur de création socket TCP" << std::endl;
         return -1;
     }
+    
+    int opt = 1;
+    setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     // Set up sigaction
     struct sigaction sa;

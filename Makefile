@@ -1,7 +1,9 @@
 # Définir les variables
 CXX = g++
+DEBUGFLAG = -g
 CXXFLAGS = -Wall -std=c++17 -I./include
 LDFLAGS = -lzstd  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
+
 
 # Source files
 SRC_SERVER = server/server.cpp
@@ -19,6 +21,10 @@ EXEC_CLIENT = bin/client
 
 # Cible par défaut
 all: $(EXEC_SERVER) $(EXEC_CLIENT)
+
+# Debug build
+debug: CXXFLAGS += -DDEBUG -g
+debug: all
 
 # Créer le répertoire bin si nécessaire
 bin/:
