@@ -22,7 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <zstd.h>
+#include <zlib.h>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -276,26 +276,20 @@ bool compressChunk(std::vector<char> &buffer, bool verbose = false)
     size_t dataSize = buffer.size() - HEADER_SIZE - FOOTER_SIZE;
 
     // Calcul de la taille maximale compressée
-    size_t maxCompressedSize = ZSTD_compressBound(dataSize);
-    std::vector<char> tempBuffer(HEADER_SIZE + maxCompressedSize); // Tampon temporaire
-
+    uLongf compressedSize = compressBound(dataSize);
+    std::vector<char> tempBuffer(HEADER_SIZE + compressedSize); // Tampon temporaire
     try
     {
         // Compression des données dans le tampon temporaire
-        size_t compressedSize = ZSTD_compress(
-            tempBuffer.data() + HEADER_SIZE, // Destination buffer
-            maxCompressedSize,               // Destination buffer size
-            &*dataStart,                     // Source data
-            dataSize,                        // Source data size
-            7                                // Compression level
-        );
+        int result = compress2(reinterpret_cast<Bytef *>(tempBuffer.data() + HEADER_SIZE), &compressedSize,
+                               reinterpret_cast<const Bytef *>(&*dataStart), dataSize, Z_BEST_COMPRESSION);
 
         // Vérification du résultat de la compression
-        if (ZSTD_isError(compressedSize))
+        if (result != Z_OK)
         {
             if (verbose)
             {
-                std::cerr << "Compression failed: " << ZSTD_getErrorName(compressedSize) << std::endl;
+                std::cerr << "Compression failed with error code: " << result << std::endl;
             }
             return false;
         }

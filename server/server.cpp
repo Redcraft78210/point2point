@@ -16,11 +16,12 @@
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
+#include <sstream>
 #include <thread>
 #include <unistd.h>
 #include <unistd.h> // Pour chdir
 #include <vector>
-#include <zstd.h>
+#include <zlib.h>
 
 #define UDP_PORT 12345
 #define TCP_PORT 12346
@@ -128,21 +129,7 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
     size_t bufferSize = bufferEnd - bufferStart;
 
     // Estimate the maximum decompressed size
-    size_t outputSize = ZSTD_getFrameContentSize(bufferStart, bufferSize);
-    if (outputSize == ZSTD_CONTENTSIZE_ERROR)
-    {
-        if (verbose)
-        {
-            std::cerr << "Error: Not a valid compressed file.\n";
-        }
-        return false;
-    }
-    if (outputSize == ZSTD_CONTENTSIZE_UNKNOWN)
-    {
-        // If the output size is unknown, start with a reasonable initial size
-        outputSize = bufferSize * 2;
-    }
-
+    size_t outputSize = bufferSize * 2;
     std::vector<char> tempBuffer(outputSize);
 
     const size_t MAX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1 GB cap for example
@@ -158,44 +145,37 @@ bool decompressChunk(std::vector<char> &input, bool verbose = true)
             return false;
         }
 
-        while (true)
+        int result = uncompress(
+            reinterpret_cast<Bytef *>(tempBuffer.data()),
+            &outputSize,
+            reinterpret_cast<const Bytef *>(bufferStart),
+            bufferSize);
+
+        if (result == Z_OK)
         {
-            size_t decompressedSize = ZSTD_decompress(tempBuffer.data(), tempBuffer.size(), bufferStart, bufferSize);
-
-            if (ZSTD_isError(decompressedSize))
+            // Resize the buffer to the actual decompressed size
+            input.assign(tempBuffer.begin(), tempBuffer.begin() + outputSize);
+            if (verbose)
             {
-                std::string errorName = ZSTD_getErrorName(decompressedSize);
-                if (errorName == "Destination buffer is too small")
-                {
-                    // Double the buffer size and try again
-                    tempBuffer.resize(tempBuffer.size() * 2);
-                    if (verbose)
-                    {
-                        std::cerr << "Buffer too small. Resizing to: " << tempBuffer.size() << " bytes.\n";
-                    }
-                }
-                else
-                {
-                    // Other decompression error
-                    if (verbose)
-                    {
-                        std::cerr << "Decompression error: " << errorName << "\n";
-                    }
-                    return false;
-                }
+                std::cout << "Decompressed successfully. Original size: " << bufferSize
+                          << ", Decompressed size: " << outputSize << " bytes.\n";
             }
-            else
+            return true;
+        }
+        else if (result == Z_BUF_ERROR)
+        {
+            // Expand the output buffer
+            outputSize *= 2;
+            tempBuffer.resize(outputSize);
+        }
+        else
+        {
+            if (verbose)
             {
-                // Resize the buffer to the actual decompressed size
-                input.assign(tempBuffer.begin(), tempBuffer.begin() + decompressedSize);
-
-                if (verbose)
-                {
-                    std::cout << "Decompressed successfully. Original size: " << bufferSize
-                              << ", Decompressed size: " << decompressedSize << " bytes.\n";
-                }
-                return true;
+                // Decompression error
+                std::cerr << "Decompression error: " << result << "\n";
             }
+            return false;
         }
     }
 }
@@ -739,6 +719,10 @@ int main()
         return -1;
     }
     
+    int opt = 1;
+    setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
     int opt = 1;
     setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));

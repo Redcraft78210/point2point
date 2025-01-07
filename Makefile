@@ -2,7 +2,10 @@
 CXX = g++
 DEBUGFLAG = -g
 CXXFLAGS = -Wall -std=c++17 -I./include
-LDFLAGS = -lzstd  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
+DEBUGFLAG = -g
+
+#LDFLAGS = -lzstd  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
+LDFLAGS = -lz  # Ajouter la bibliothèque zlib pour la compression (si nécessaire)
 
 
 # Source files
