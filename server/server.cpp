@@ -610,7 +610,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                     message = std::to_string(seq_num);
                     if (compressFlag)
                     {
-                        std::cerr << "Compress flag: #" << seq_num << std::endl; // Log actual sequence number
+                        std::cout << "Compress flag: #" << seq_num << std::endl; // Log actual sequence number
                         if (!decompressChunk(buffer))
                         {
                             std::cerr << "Unable to decompress packet received: #" << seq_num << std::endl; // Log actual sequence number
@@ -618,7 +618,6 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                         }
                         else
                         {
-
                             // Écrire les données dans le fichier
                             output_file.write(buffer.data(), buffer.size());
                         }
