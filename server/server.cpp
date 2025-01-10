@@ -221,8 +221,17 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     bool packet_corrupted = false;
     bool incremental_mode = true;
     int writed_packet = 0;
+
     while (true)
     {
+        std::cout << std::boolalpha;
+
+        std::cout << "output_file ouvert ? : " << output_file.is_open() << std::endl;
+        std::cout << "is_filepath_packet : " << is_filepath_packet << std::endl;
+        std::cout << "existing_file : " << existing_file << std::endl;
+        std::cout << "packet_corrupted : " << packet_corrupted << std::endl;
+        std::cout << "incremental_mode : " << incremental_mode << std::endl;
+        std::cout << "writed_packet : " << writed_packet << std::endl;
         if (!is_filepath_packet && !packet_corrupted && incremental_mode)
         {
             if (existing_file)

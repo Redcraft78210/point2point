@@ -205,11 +205,19 @@ std::string murmurhash_addition(std::vector<char> &buffer, int start_offset_byte
     return ss.str();
 }
 
-void showProgress(size_t bytesSent, size_t totalBytes, const std::chrono::steady_clock::time_point &startTime, double elapsedTime)
+void showProgress(ssize_t previous_sent_bytes, double previous_sent_duration, ssize_t bytesSent, size_t totalBytes, const std::chrono::steady_clock::time_point &startTime, double elapsedTime)
 {
     int progress = static_cast<int>((bytesSent * 100) / totalBytes);
     double originalTransferRate = (bytesSent / 1024.0) / elapsedTime; // KB/s
-    double transferRate = (bytesSent / 1024.0) / elapsedTime;         // KB/s
+    double transferRate = 0.0;
+    if (previous_sent_duration > 0)
+    {
+        transferRate = (previous_sent_bytes / 1024.0) / previous_sent_duration; // KB/s
+    }
+    else
+    {
+        transferRate = originalTransferRate; // Fallback to average transfer rate
+    }
 
     // Convertir le taux de transfert en fonction de sa taille
     std::string rateUnit = "KB/s";
@@ -453,6 +461,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     buffer.clear();
     buffer.resize(chunkSize);
     ssize_t bytes_sent = 0;
+    ssize_t previous_sent_bytes = 0;
     double previousSentTime = 0.0;
     bool is_newfile = false;
 
@@ -510,7 +519,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
                         packet_number++;
                         totalBytesSents += file.gcount();
-                        showProgress(totalBytesSents, totalBytestoSend, startTime, elapsedTime);
+                        showProgress(previous_sent_bytes, previousSentTime, totalBytesSents, totalBytestoSend, startTime, elapsedTime);
                         buffer.clear();
                         buffer.resize(currentBufferSize);
                     }
@@ -541,7 +550,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         }
 
         double elapsedTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-        double transferRate = (bytes_sent / 1024.0) / elapsedTime; // Ko/s
+        double transferRate = (previous_sent_bytes / 1024.0) / previousSentTime; // Ko/s
 
         chunkSize = adjustBufferSize(transferRate, previousSentTime, currentBufferSize);
 
@@ -565,6 +574,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                 hexDump(buffer);
             }
             bytes_sent = sendto(udp_socket, buffer.data(), bytes_to_send, 0, (struct sockaddr *)&server_addr, server_len);
+            previous_sent_bytes = bytes_sent;
             if (bytes_sent < 0)
             {
                 std::cerr << "\nErreur d'envoi du paquet UDP #" << packet_number << ", tentative " << retries + 1 << std::endl;
@@ -617,7 +627,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
         }
 
         totalBytesSents += file.gcount();
-        showProgress(totalBytesSents, totalBytestoSend, startTime, elapsedTime);
+        showProgress(previous_sent_bytes, previousSentTime, totalBytesSents, totalBytestoSend, startTime, elapsedTime);
         buffer.clear();
         buffer.resize(chunkSize);
     }
