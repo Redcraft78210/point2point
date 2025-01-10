@@ -357,7 +357,7 @@ bool resendMetadata(int udp_socket, const std::vector<char> &buffer, size_t meta
         }
 
         std::cerr << "Erreur d'envoi du nom de fichier, tentative " << (send_attempts + 1) << " de " << max_attempts << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Wait before retrying
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Wait before retrying
         ++send_attempts;
     }
 
@@ -405,7 +405,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
     while (sendto(udp_socket, buffer.data(), buffer.size(), 0, (struct sockaddr *)&server_addr, server_len) < 0)
     {
         std::cerr << "Erreur d'envoi du nom de fichier" << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
     }
 
     ulong retries = 0;
@@ -446,7 +446,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                 return;
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
     }
 
     if (retries == MAX_RETRIES)
@@ -504,7 +504,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                 if (bytes_sent < 0)
                 {
                     std::cerr << "\nErreur d'envoi du CRC des datas du  paquet UDP #" << packet_number << ", tentative " << retries + 1 << std::endl;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
                     continue;
                 }
 
@@ -535,7 +535,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                     std::cerr << "Erreur de réception de l'ACK pour le CRC des données du paquet #" << packet_number << ", tentative " << retries << std::endl;
                 }
 
-                std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
             }
 
             if (retries == MAX_RETRIES)
@@ -578,7 +578,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
             if (bytes_sent < 0)
             {
                 std::cerr << "\nErreur d'envoi du paquet UDP #" << packet_number << ", tentative " << retries + 1 << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
                 continue;
             }
 
@@ -605,7 +605,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                         std::cerr << "\nCRC incorrect (!=" << checksum << ") pour le paquet #" << packet_number << ", tentative " << retries << std::endl;
                         // You can handle the "INCORRECT CRC" case here, like retrying or other logic
                         // For now, we just log and retry
-                        std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
                         continue;
                     }
                 }
@@ -616,7 +616,7 @@ void send_file_udp(int udp_socket, sockaddr_in &server_addr, const char *file_pa
                 std::cerr << "Erreur de réception de l'ACK pour le paquet #" << packet_number << ", tentative " << retries << std::endl;
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // Attendre un peu avant de réessayer
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Attendre un peu avant de réessayer
         }
         previousSentTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - startsendTime).count();
 

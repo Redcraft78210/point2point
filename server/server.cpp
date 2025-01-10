@@ -222,7 +222,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
     bool incremental_mode = true;
     int writed_packet = 0;
 
-    while (true)
+    while (true)    
     {
         std::cout << std::boolalpha;
 
@@ -232,7 +232,7 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
         std::cout << "packet_corrupted : " << packet_corrupted << std::endl;
         std::cout << "incremental_mode : " << incremental_mode << std::endl;
         std::cout << "writed_packet : " << writed_packet << std::endl;
-        if (!is_filepath_packet && !packet_corrupted && incremental_mode)
+        if (!is_filepath_packet && incremental_mode)
         {
             if (existing_file)
             {
@@ -642,8 +642,8 @@ void handle_udp(int udp_socket, int tcp_socket, bool &udp_is_closed)
                 else
                 {
                     packet_corrupted = true;
-                    hexDump(buffer_bak);
-                    hexDump(buffer);
+                    // hexDump(buffer_bak);
+                    // hexDump(buffer);
                     std::cerr << "Corrupted packet received: #" << seq_num << std::endl; // Log actual sequence number
                     std::cout << "Calculated checksum (MurmurHash3): 0x" << std::hex << calculated_checksum << std::endl;
                     std::cout << "Extracted checksum (from last 4 bytes): 0x" << std::hex << checksum << std::dec << std::endl;
